@@ -496,7 +496,7 @@ flyby and at the start line; the sunset flyby shots show no flare with the sun b
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
    **user-confirmed (2026-10-29)**. Racing (17): verified in frame dumps, needs the user to drive.
-2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
+2. Gamepad and keyboard in the live window need the user (`rsc2_launcher.exe`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
 4. XNet "no network" handling once the Live / System Link screens are reached. In RSC2's D3D no code
