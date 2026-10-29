@@ -260,7 +260,7 @@ far faster than real time, so flip numbers and timings differ between the two.
 
 ## Next
 
-1. Finish profile creation with real input (the user), then see what the next screens need.
+1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Next: explore the screens after it.
 2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
