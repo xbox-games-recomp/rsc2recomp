@@ -29,8 +29,9 @@ set RECOMP_HEAP_RECLAIM=1
 set RECOMP_DISPATCH_GATE=1
 set RECOMP_KEYBOARD=1
 set RECOMP_D3D11_RES=2
-rem Flight recorder: F12 in the game window saves the last 120 frames to flicker\<date_time>\
-set RECOMP_D3D11_RING=120
+rem Flight recorder: F12 in the game window saves the last 240 frames (8 s) to flicker\<date_time>\
+rem (about 1.2 GB of video memory at RES 2, and 900 MB of BMPs per save)
+set RECOMP_D3D11_RING=240
 
 echo Starting RalliSport Challenge 2 (recompiled)...
 "build\Release\rsc2_recomp.exe" %* 2> run.log
