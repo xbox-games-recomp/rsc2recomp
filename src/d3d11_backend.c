@@ -1508,7 +1508,7 @@ static ID3D11RasterizerState *get_rast(const Nv2aRenderState *rs, int depth_clip
     memset(&d, 0, sizeof d);
     d.FillMode = D3D11_FILL_SOLID;
     d.DepthClipEnable = depth_clip ? TRUE : FALSE;
-    d.ScissorEnable = FALSE;
+    d.ScissorEnable = TRUE;         /* the surface clip rectangle, set per draw */
     d.FrontCounterClockwise = (rs->front_face == 0x901) != (s_cullflip != 0);
     d.CullMode = D3D11_CULL_NONE;
     if (rs->cull_enable && !s_nocull) {
@@ -1579,10 +1579,18 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
 {
     RT *r;
     ZB *z;
+    Nv2aSurface s_ext;
+    uint32_t cx = s->clip_x, cy = s->clip_y, cw = s->width, ch = s->height;
 
     thread_check("clear");
     if (!ensure_init() || !s->width || !s->height)
         return;
+    if (cx || cy) {                     /* as in be_draw_ext: up to the clip's far edge */
+        s_ext = *s;
+        s_ext.width += cx;
+        s_ext.height += cy;
+        s = &s_ext;
+    }
     {
         static long lf = -2, le = -1;
         if (lf == -2) {
@@ -1607,10 +1615,11 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
         c[1] = (float)((argb >> 8) & 0xFF) / 255.0f;
         c[2] = (float)(argb & 0xFF) / 255.0f;
         c[3] = (float)(argb >> 24) / 255.0f;
-        if (r->w == s->width && r->h == s->height) {
+        if (r->w == s->width && r->h == s->height && !cx && !cy) {
             ID3D11DeviceContext_ClearRenderTargetView(s_ctx, r->rtv, c);
         } else {
-            /* A smaller pass on a grown surface clears only its own rectangle. */
+            /* A smaller pass on a grown surface, or a clip with an origin, clears
+             * only its own rectangle. */
             static ID3D11DeviceContext1 *ctx1;
             static int tried;
             D3D11_RECT rc;
@@ -1619,7 +1628,8 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
                 if (FAILED(ID3D11DeviceContext_QueryInterface(s_ctx, &IID_ID3D11DeviceContext1, (void **)&ctx1)))
                     ctx1 = NULL;
             }
-            rc.left = 0; rc.top = 0; rc.right = (LONG)(s->width * s_res); rc.bottom = (LONG)(s->height * s_res);
+            rc.left = (LONG)(cx * s_res); rc.top = (LONG)(cy * s_res);
+            rc.right = (LONG)((cx + cw) * s_res); rc.bottom = (LONG)((cy + ch) * s_res);
             if (ctx1)
                 ID3D11DeviceContext1_ClearView(ctx1, (ID3D11View *)r->rtv, c, &rc, 1);
             else
@@ -1736,8 +1746,25 @@ static void log_batch(uint64_t idx, const Nv2aSurface *s, const Nv2aBatch *b, co
                     si->tex.offset, si->tex.width, si->tex.height, si->tex.color,
                     si->normalised ? " norm" : " lin", si->cube ? " cube" : "");
     }
-    if (x->vsh)
-        fprintf(stderr, "    vsh on GPU: %u verts x %u attrs, %u indices\n", x->vsh->nverts, x->vsh->stride, x->vsh->nindices);
+    if (x->vsh) {
+        const Nv2aVshBatch *vb = x->vsh;
+        uint32_t i, k;
+        fprintf(stderr, "    vsh on GPU: %u verts x %u attrs, %u indices\n", vb->nverts, vb->stride, vb->nindices);
+        /* input -> slot map, and the first vertices' attributes (texcoords, colours) */
+        fprintf(stderr, "    slots:");
+        for (i = 0; i < 16; i++)
+            if (vb->slot[i] != 0xFF)
+                fprintf(stderr, " v%u=s%u", i, vb->slot[i]);
+        fprintf(stderr, "\n");
+        for (i = 0; i < vb->nverts && i < 4; i++) {
+            fprintf(stderr, "    vtx%u:", i);
+            for (k = 0; k < vb->stride; k++) {
+                const float *a = vb->attrs[i * vb->stride + k];
+                fprintf(stderr, " [%g %g %g %g]", a[0], a[1], a[2], a[3]);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
     if (b->count >= 3 && b->vertices) {
         const Nv2aVertex *v = b->vertices;
         const Nv2aVertexExt *e = x->ext;
@@ -2332,11 +2359,29 @@ static void be_draw_ext(const Nv2aSurface *s, const Nv2aBatch *b, const Nv2aBatc
     float bf[4];
     uint64_t dec0 = s_tex_decodes;
 
+    Nv2aSurface s_ext;
+    D3D11_RECT scissor;
+
     thread_check("draw");
     if (!ensure_init() || !b->count || !s->width || !s->height)
         return;
+    /* SET_SURFACE_CLIP with an origin: positions are whole-surface coordinates,
+     * and only the clip rectangle is written (RSC2 clips each on-screen-keyboard
+     * label to its key). The draw then covers the surface up to the clip's far
+     * edge, and the scissor (get_rast enables it) keeps it inside the clip. */
+    scissor.left = (LONG)(s->clip_x * s_res);
+    scissor.top = (LONG)(s->clip_y * s_res);
+    scissor.right = (LONG)((s->clip_x + s->width) * s_res);
+    scissor.bottom = (LONG)((s->clip_y + s->height) * s_res);
+    if (s->clip_x || s->clip_y) {
+        s_ext = *s;
+        s_ext.width += s->clip_x;
+        s_ext.height += s->clip_y;
+        s = &s_ext;
+    }
     r = get_rt(s);
     if (!r) return;
+    ID3D11DeviceContext_RSSetScissorRects(s_ctx, 1, &scissor);
     r->last_draw = ++s_draw_count;
     s_draws_this_flip++;
     s_last_draw_ms = GetTickCount64();

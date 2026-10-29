@@ -228,11 +228,39 @@ gone (pad3 run), **but the key letters are still missing**, so that was not the 
 screen ("SELECT PROFILE", "Select", "Back") draws. `wbinvd` at the seeded `0x002A9700` (a cache flush at the top
 of a function) is reached ~48 times: a no-op, fine.
 
+## 13. Clipped text: SET_SURFACE_CLIP origin was dropped (toolkit + back end fix)
+
+Symptom: the profile name keyboard drew its keys without letters; the profile panel's labels were missing too.
+
+How found: one frame logged with `RECOMP_D3D11_LOGFRAME` (flip 5000 with vsync on, ~145 flips/s here). Each key
+is a 9-slice frame (DXT5 `826C2900`) plus a 2-triangle glyph quad from a glyph atlas (`808A8A00` etc., linear A8,
+fmt 0x1F; their alpha holds the glyphs -- the BMP texture dump drops alpha, read byte 3 of each pixel). Glyph quads
+had sane positions, texel coordinates on real glyphs and opaque colours, and the same combiner/blend state as text
+that did show. The difference was the batch header's surface size: `31x31` for every key label, `112x23`, `450x107`
+... while full-screen draws had `640x480`. RSC2 sets `SET_SURFACE_CLIP_HORIZONTAL/VERTICAL` to each label's box
+(x, y, w, h). The executor kept clip_x/clip_y but `current_surface()` passed only w/h, so the back end placed the
+clip at (0,0): its screen-to-clip scale used `2 / 31` and the viewport covered 0..31, and every label outside the
+top-left corner vanished.
+
+Fix:
+- toolkit (`patches/xboxrecomp.patch`): `Nv2aSurface` gains `clip_x, clip_y`; `current_surface()` fills them.
+- `src/d3d11_backend.c`: a draw or clear with a clip origin is treated as covering the surface up to the clip's
+  far edge (vertex positions are whole-surface coordinates), and only the clip rectangle is written: rasterizer
+  states now enable scissor and every game draw sets the scissor to the clip rectangle (full surface when no clip);
+  colour clears use `ClearView` with that rectangle. The present/post passes use the default rasterizer state and
+  are unaffected.
+- `RECOMP_D3D11_LOGFRAME` now also prints a vsh batch's input slots and first four vertices.
+
+Verified in frame dumps (`frames\kb6_sheet.png`): every key label, the tab row (Symbols / International / A-Z),
+Space / BackSpc / Caps / Done, "Enter Name of Profile", and the profile panel labels (Profile Name, Career Points,
+Mileage, Hours Driven, License, Unlocks). Loading screen and movies unchanged.
+
+Also learnt: with vsync on (`run_rsc2.bat`) the movies play at real speed; with `RECOMP_D3D11_VSYNC=0` they run
+far faster than real time, so flip numbers and timings differ between the two.
+
 ## Next
 
-1. **On-screen keyboard without key letters** (`frames\pad3_last.png`). Start with one `RECOMP_D3D11_LOGFRAME`
-   on that screen: are the glyph quads drawn at all (then texture / combiner / alpha, compare with the xemu shader
-   cache), or never submitted (then game side: font/glyph path)?
+1. Finish profile creation with real input (the user), then see what the next screens need.
 2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
