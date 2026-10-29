@@ -7,6 +7,14 @@ import glob,os,sys,re
 GEN=os.path.join(os.path.dirname(os.path.abspath(__file__)),'src','recomp','gen','').replace('\\','/')
 PATCHES=[
  # (anchor, replacement) pairs go here; see mm3recomp/patch_gen.py for examples.
+
+ # Physical-heap free (sub_0023C920): "is this pointer in heap A" tests [base, base + (size << 10))
+ # with size in bytes (0x20000 -> 128 MB). Harmless on the console, where XPhysicalAlloc is top-down
+ # and heap A sits at the top of RAM; our arena is bottom-up, so every later XPhysicalAlloc block
+ # (car textures) passed the test and was freed as a heap block, reading a "header" out of the
+ # neighbouring texture. NOTES 15.
+ ('loc_0023C932: ;\n    ecx = MEM32(edi + 0x6A4);\n    ecx = ecx << 0xA;\n',
+  'loc_0023C932: ;\n    ecx = MEM32(edi + 0x6A4); /* patch_gen: bytes, not KB (NOTES 15) */\n'),
 ]
 files=sorted(glob.glob(GEN+'recomp_*.c'))
 ok=True

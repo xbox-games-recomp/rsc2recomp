@@ -1,4 +1,4 @@
-﻿diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
+diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
 index 7746ae3..1d199f1 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
@@ -1728,7 +1728,7 @@ index 8acb0af..3d2a7e8 100644
  
  #endif
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index b723a92..5273a24 100644
+index b723a92..dd71588 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -1554,14 +1554,26 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
@@ -1806,6 +1806,17 @@ index b723a92..5273a24 100644
          Sleep(0);  /* yield; the waiter is spinning on another core */
      }
      return 0;
+@@ -4089,7 +4117,9 @@ static void contig_report(const char *what, uint32_t va, uint32_t pages)
+ 
+     if (!g_contig_t0)
+         g_contig_t0 = GetTickCount();
+-    if (++ops > 16 && delta < 512 && (ops & 1023) != 0)
++    static int all = -1;
++    if (all < 0) all = getenv("RECOMP_CONTIG_LOG") != NULL;
++    if (++ops > 16 && delta < 512 && (ops & 1023) != 0 && !all)
+         return;
+     last_pages = g_contig_pages_in_use;
+     fprintf(stderr, "  [CONTIG] t=%.1fs %s 0x%08X %u KB: in use %u KB, "
 diff --git a/src/usb/usb_gamepad.c b/src/usb/usb_gamepad.c
 index bd00f3f..4d50416 100644
 --- a/src/usb/usb_gamepad.c

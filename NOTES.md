@@ -288,23 +288,58 @@ had 490k opaque pixels at composite time) plus the after-draw dump showing b199 
 
 Verified in frame dumps (`frames\car12_sheet.png`): the car rotates inside the CAR menu with its floor reflection;
 loading screen, logos, intro movie, profile screens and keyboard, Main, Career and the Amateur chart unchanged.
-Not checked by the user yet.
+User-confirmed for the first car (2026-10-29); cycling to the next car froze: see 15.
 
 Seen on the way, not fixed (follow-ups):
-- The CAR screen still shows a few stray glyph fragments near the bottom ("a", "|", "ee"): probably partly drawn
-  stat widgets.
+- ~~Stray glyph fragments near the bottom of the CAR screen~~: they were the stat bars missing a vtable function;
+  fixed in 15.
 - Saved profiles fail to load in a later run ("Unable to load <name>"); files are read without I/O errors, so
   probably the save signature check (XCalculateSignature / kernel keys).
 - Single Race -> Rally -> SS1 -> A crashes deterministically in the game's heap free (`sub_00238F10`, called from
-  `0x000AA944`, freeing `[obj+0x48]` = `0x000ADF22`, a code address).
+  `0x000AA944`, freeing `[obj+0x48]` = `0x000ADF22`, a code address). Same crash site and fault address as 15,
+  so probably fixed by it; not re-run.
 - Runs started from this tool are redirected by the Claude app package (`%LOCALAPPDATA%` -> package LocalCache),
   which splits the z: cache between two folders and produced rename collisions; `RECOMP_SAVE_DIR=<repo>\savedata`
   keeps saves local (the Cache folder still goes through AppData).
 
+## 15. Car selection: cycling to the next car froze (seeds + game heap patch)
+
+Pressing right on the CAR screen stopped all flips. Two causes, found in order:
+
+1. **Unseeded vtable entries.** The log showed `[ICALL] Failed to resolve VA 0x001BA230` (25k times since the CAR
+   screen opened). `0x001BA230` is `float f(int)` through a jump table, `ret 4`: a failed indirect call pushes no
+   float and pops no argument, which unbalances the x87 stack and the guest esp. A scan of `.rdata` for pointers
+   into `.text` that sit among known function starts found three real ones: `0x001573D0`, `0x001BA230`,
+   `0x001BA2B0`, now in `config/seed_functions.json`. This also fixed the stat bars (Handling / Speed /
+   Durability / Accel), which were the "stray glyphs" of 14.
+2. **Game heap range check vs. a bottom-up contiguous arena.** Still frozen after that, with the crash in the heap
+   free (`sub_00238F10` from `sub_0023C920`). The game's allocator (`0x468F28`) sets up heap A with
+   `XPhysicalAlloc(0x20000, -1, 0, 4)` (`sub_0023C340`), and its free tests "pointer in heap A" as
+   `base <= p < base + ([+0x6A4] << 10)` with `[+0x6A4]` = 0x20000 *bytes*, i.e. 128 MB. On the console
+   XPhysicalAlloc allocates top-down, so heap A is at the top of RAM and nothing later is above it. Our arena is
+   bottom-up: heap A got the first block (`0x80001000`) and every later XPhysicalAlloc block passed the test. The
+   car's textures (`0x80E96000`, 304 KB, and `0x82C5B000`, 1452 KB, allocated when the car loads) were therefore
+   freed as heap blocks on the next car, reading a "header" at `p-8` out of the menu movie's YUY2 frame
+   (`0x80E00000`, 600 KB, decoded by Bink every frame) and corrupting the heap. Fix (`patch_gen.py`): drop the
+   `<< 10`, so the range is heap A's real 128 KB. Only that function reads `[+0x6A4]`. The kernel arena now sees the
+   frees (`frees=0` before).
+
+Found by: a temporary print at `loc_000AA93B` (handle, `[+0x48]`, header dwords around the block), then
+`RECOMP_WATCH=0x80E95FFC` (writer = Bink at `0x349249`, texture `80E00000 640x480`), the full arena log and
+`RECOMP_WATCH=0x004695CC` (the heap size store). New knob: `RECOMP_CONTIG_LOG=1` logs every contiguous
+alloc/free (the default log throttles after 16).
+
+Worth knowing for other titles: any game that classifies pointers by "above my first XPhysicalAlloc" relies on
+top-down allocation. A top-down arena in the toolkit would fix them all, but would change the high-water
+semantics the pushbuffer executor uses (`xbox_ContiguousAllocatedBytes`), so it stays a per-game patch for now.
+
+Verified in frame dumps (`frames\cyc13_sheet.png`): Hyundai -> Skoda -> Mitsubishi -> Ford -> back to Seat, each
+with model or lock text and stat bars; no crash and no unresolved calls.
+
 ## Next
 
-1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection fixed (14), awaiting
-   the user's confirmation; then the race itself.
+1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15): first car
+   user-confirmed, cycling fixed and awaiting the user's confirmation; then the race itself.
 2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
