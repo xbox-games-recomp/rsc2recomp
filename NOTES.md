@@ -530,6 +530,26 @@ run to ~32 flips/s either way, so a slow/fast comparison needs a cheaper probe. 
 (`20261029_143918` 142-149) is not a dropout: the car pitches downhill and the far hills slide up behind the
 HUD's semi-transparent red progress bar.
 
+Third sample, after 22 (`flicker\20261029_155125`, user-circled): the dropped trees are **distant** trees at
+the end of the road, gone in frames 38-51 and back at 52, while the car sits reversing with wheelspin (0 km/h,
+nearly static camera). `6B1E852A` draws ~126 fewer triangles on exactly those frames. What is known so far:
+- `6B1E852A` is tree foliage: per tree a trunk draw (`9A1B30D6`), then a foliage draw of camera-facing cards
+  (2 triangles each) from a 512x1024 atlas of 8x8 views (`81A64800`). Far trees get one card; near trees
+  40-80 triangles. The cards are written inline into the pushbuffer every frame (no vertex buffer), so a missing
+  tree is the title not asking for it.
+- Ruled out: the back end dropping batches (every foliage batch it receives is drawn), contiguous-memory
+  allocations (none during the race), frame time (no slow frames near the drop), the host timer resolution
+  (`timeBeginPeriod(1)`: same dropout rate), the one-CPU gate (`RECOMP_DISPATCH_GATE=0`: same), the TSC
+  (already scaled to 733 MHz), and visibility tests: RSC2's main-view tests are all pairs of flare-type proxies
+  (`9A7BEA7C` 89/48/49/7/8 triangles, `938821B6`, `B278CC79`), none around trees. The `9A7BEA7C` batches in the
+  512x512 target are a depth-only (shadow) pass, not tests.
+- A dust cloud from the wheelspin (`306EDB61`, growing from 512 to 1056 triangles through the sample) hangs over
+  the same spot; it does not write depth. Not shown to be related.
+- Scripted driving has not reproduced a dropout on a straight; the drop detector also fires on flyby camera
+  cuts, so earlier "every run has a 6-flip dropout" counts were flyby cuts.
+Next: find the game code that emits the foliage draws (the D3D inline-draw call's callers) and what it tests per
+tree; or reproduce the user's spot (reverse with wheelspin on the start straight, bonnet camera).
+
 ## 22. Race frame rate: visibility tests no longer wait for the GPU (toolkit + back end fix)
 
 User report: the frame rate regressed. It came from 20, not 21: `be_zpass_end` spun on `GetData` at every test,
