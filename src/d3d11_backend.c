@@ -480,6 +480,23 @@ typedef struct {
 #define VB_BYTES (24u * 1024 * 1024)
 
 static HWND s_hwnd;
+static volatile LONG s_ring_save;       /* F12 pressed: ring_flip writes the ring out */
+/* Triangles per vertex programme in the current flip, for the ring's stats line. */
+#define RING_VSH 24
+static struct { uint32_t hash, tris, batches; } s_fv[RING_VSH];
+static int s_fv_n;
+static void frame_vsh_add(uint32_t hash, uint32_t tris)
+{
+    int i;
+    for (i = 0; i < s_fv_n; i++)
+        if (s_fv[i].hash == hash) break;
+    if (i == s_fv_n) {
+        if (s_fv_n == RING_VSH) i = RING_VSH - 1;    /* the rest share the last slot */
+        else { s_fv[i].hash = hash; s_fv[i].tris = s_fv[i].batches = 0; s_fv_n++; }
+    }
+    s_fv[i].tris += tris;
+    s_fv[i].batches++;
+}
 static ID3D11Device *s_dev;
 static ID3D11DeviceContext *s_ctx;
 static IDXGISwapChain *s_swap;
@@ -609,6 +626,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
         int side = xbox_InputWin32SideVk((int)w, (uint32_t)l);
         if (m == WM_SYSKEYDOWN && w == VK_F4)
             break;                          /* Alt+F4 still closes */
+        if (w == VK_F12) {                  /* flight recorder: save the last frames */
+            InterlockedExchange(&s_ring_save, 1);
+            return 0;
+        }
         xbox_InputKeySet((int)w, 1);
         if (side)
             xbox_InputKeySet(side, 1);
@@ -3236,6 +3257,7 @@ grade_drawn:;
     if (!x->vsh)
         s_vb_off += out * (uint32_t)sizeof(GpuVertex);
     s_tri_count += out / 3;
+    frame_vsh_add(x->vsh ? x->vsh_hash : 0, out / 3);
     if (s->width / s->aa_sx >= 640)
         s_present_rt = r;
     {
@@ -3962,6 +3984,120 @@ static void be_idle(void)
     }
 }
 
+/* RECOMP_D3D11_RING=<n>: flight recorder. The last n presented frames stay on the GPU
+ * (one copy per flip) with a stats line each; F12 in the game window writes them to
+ * flicker\<date_time>\NNN_f<flip>.bmp plus stats.txt (batches, triangles, and triangles
+ * per vertex programme), for glitches that last a few frames. The game pauses while
+ * it writes. */
+#define RING_MAX 240
+static struct { ID3D11Texture2D *tex; uint32_t w, h; uint64_t flip; char stats[700]; } s_ring[RING_MAX];
+static int s_ring_n = -1, s_ring_at, s_ring_fill;
+
+static void ring_flip(RT *r)
+{
+    static uint64_t tris0;
+    uint64_t tris = s_tri_count - tris0;
+    D3D11_TEXTURE2D_DESC td;
+    int i, k, len;
+
+    tris0 = s_tri_count;
+    if (s_ring_n < 0) {
+        const char *e = getenv("RECOMP_D3D11_RING");
+        s_ring_n = e ? atoi(e) : 0;
+        if (s_ring_n > RING_MAX) s_ring_n = RING_MAX;
+        if (s_ring_n > 0)
+            fprintf(stderr, "[D3D11] flight recorder: last %d frames, F12 saves them\n", s_ring_n);
+    }
+    if (s_ring_n <= 0 || !r || !r->tex)
+        return;
+    ID3D11Texture2D_GetDesc(r->tex, &td);
+    i = s_ring_at;
+    if (!s_ring[i].tex || s_ring[i].w != td.Width || s_ring[i].h != td.Height) {
+        if (s_ring[i].tex) ID3D11Texture2D_Release(s_ring[i].tex);
+        s_ring[i].tex = NULL;
+        td.BindFlags = 0; td.MiscFlags = 0; td.CPUAccessFlags = 0; td.Usage = D3D11_USAGE_DEFAULT;
+        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_ring[i].tex)))
+            return;
+        s_ring[i].w = td.Width; s_ring[i].h = td.Height;
+    }
+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ring[i].tex, (ID3D11Resource *)r->tex);
+    s_ring[i].flip = s_flip_count;
+    len = snprintf(s_ring[i].stats, sizeof s_ring[i].stats, "flip %llu rt %08X batches %llu tris %llu |",
+                   (unsigned long long)s_flip_count, r->va, (unsigned long long)s_draws_this_flip,
+                   (unsigned long long)tris);
+    for (k = 0; k < s_fv_n && len > 0 && len < (int)sizeof s_ring[i].stats - 32; k++)
+        len += snprintf(s_ring[i].stats + len, sizeof s_ring[i].stats - len, " %08X:%u/%u",
+                        s_fv[k].hash, s_fv[k].tris, s_fv[k].batches);
+    s_ring_at = (i + 1) % s_ring_n;
+    if (s_ring_fill < s_ring_n) s_ring_fill++;
+    {
+        /* RECOMP_D3D11_RING_AUTO=<pct>: save the ring by itself, 15 flips after a vertex programme
+         * that drew 3000+ triangles drops under pct% of that from one flip to the next.
+         * RECOMP_D3D11_FRAMEVSH=1 prints every flip's stats line. */
+        static int pct = -1, perflip;
+        static uint32_t ph[RING_VSH], pt[RING_VSH];
+        static int pn;
+        static uint64_t save_at;
+        static int autosaves;
+        static uint32_t only;           /* RECOMP_D3D11_RING_VSH=<hash>: watch that programme only (500+ tris) */
+        const char *e;
+        int a, b;
+        if (pct < 0) {
+            e = getenv("RECOMP_D3D11_RING_AUTO");
+            pct = e ? atoi(e) : 0;
+            perflip = getenv("RECOMP_D3D11_FRAMEVSH") != NULL;
+            if ((e = getenv("RECOMP_D3D11_RING_VSH")) != NULL) only = (uint32_t)strtoul(e, NULL, 16);
+        }
+        if (perflip)
+            fprintf(stderr, "[FVSH] %s\n", s_ring[i].stats);
+        for (a = 0; pct && a < pn; a++) {
+            uint32_t now = 0;
+            if (pt[a] < (only ? 500u : 3000u) || (only && ph[a] != only)) continue;
+            for (b = 0; b < s_fv_n; b++) if (s_fv[b].hash == ph[a]) now = s_fv[b].tris;
+            if ((uint64_t)now * 100 < (uint64_t)pt[a] * pct) {
+                fprintf(stderr, "[RING] flip %llu: vsh %08X tris %u -> %u\n", (unsigned long long)s_flip_count, ph[a], pt[a], now);
+                if (!save_at && autosaves < 12) {
+                    const char *lf = getenv("RECOMP_D3D11_LOGFILE");
+                    FILE *tf;
+                    save_at = s_flip_count + 15;
+                    if (lf && autosaves == 0 && (tf = fopen(lf, "w")) != NULL)   /* log a flip inside the dip */
+                        fclose(tf);
+                    autosaves++;
+                }
+            }
+        }
+        for (pn = 0; pn < s_fv_n; pn++) { ph[pn] = s_fv[pn].hash; pt[pn] = s_fv[pn].tris; }
+        if (save_at && s_flip_count >= save_at) { save_at = 0; InterlockedExchange(&s_ring_save, 1); }
+    }
+
+    if (InterlockedExchange(&s_ring_save, 0)) {
+        char dir[MAX_PATH], path[MAX_PATH + 32];
+        SYSTEMTIME t;
+        FILE *sf;
+        int j;
+        GetLocalTime(&t);
+        CreateDirectoryA("flicker", NULL);
+        snprintf(dir, sizeof dir, "flicker\\%04u%02u%02u_%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        CreateDirectoryA(dir, NULL);
+        if (s_hwnd) SetWindowTextA(s_hwnd, "RalliSport Challenge 2 (D3D11) - saving frames...");
+        snprintf(path, sizeof path, "%s\\stats.txt", dir);
+        sf = fopen(path, "w");
+        for (j = 0; j < s_ring_fill; j++) {
+            int idx = (s_ring_at - s_ring_fill + j + s_ring_n) % s_ring_n;
+            RT tmp;
+            memset(&tmp, 0, sizeof tmp);
+            tmp.tex = s_ring[idx].tex;
+            snprintf(path, sizeof path, "%s\\%03d_f%llu.bmp", dir, j, (unsigned long long)s_ring[idx].flip);
+            g_dump_alpha = 0;
+            write_rt_bmp(&tmp, path);
+            if (sf) fprintf(sf, "%03d %s\n", j, s_ring[idx].stats);
+        }
+        if (sf) fclose(sf);
+        fprintf(stderr, "[D3D11] flight recorder: wrote %d frames to %s\n", s_ring_fill, dir);
+        if (s_hwnd) SetWindowTextA(s_hwnd, "RalliSport Challenge 2 (D3D11) - frames saved (F12)");
+    }
+}
+
 static void be_flip(void)
 {
     RT *r = s_present_rt;
@@ -3996,6 +4132,7 @@ static void be_flip(void)
     present_frame(r && r->srv ? r : NULL);
     if (r && r->tex)
         dump_rt(r, 0);
+    ring_flip(r && r->srv ? r : NULL);
     if (s_trace && s_flip_count % 50 == 0) {
         fprintf(stderr, "[D3D11] flip surface %08X, present rt %08X\n", nv2a_backend_flip_surface(), s_present_rt ? s_present_rt->va : 0);
         fprintf(stderr, "[D3D11] flip %llu: %llu batches this frame\n", (unsigned long long)s_flip_count,
@@ -4105,6 +4242,7 @@ static void be_flip(void)
     }
     s_last_frame_batches = s_draws_this_flip;
     s_draws_this_flip = 0;
+    s_fv_n = 0;
 
     now = GetTickCount64();
     if (!fps_t0) fps_t0 = now;

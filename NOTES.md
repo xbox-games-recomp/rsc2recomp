@@ -440,6 +440,24 @@ correct) and the double-buffer present order (strictly alternating). A 200-frame
 (`RECOMP_D3D11_BURSTFILE`) showed no vanishing frame. Next: a screenshot or the stage/position from the user, then
 a burst there.
 
+Second pass (after 20; user: "a few frames every 10-20 seconds", still there): still not reproduced. A 75 s
+every-flip capture of scripted driving at RES 1 (`frames\fl4`, 2234 frames) and the RES 2 ring saves (`flicker\`,
+~1100 frames) were scanned for frames that break from both neighbours (8x8 blocks that jump and come back); every
+hit was the chase camera passing a tree, a post or a fence, or the car spinning. The per-flip triangle counts
+(`[FVSH]`) show the distant-landscape programme `64A6D53E` (512x256 texture plus the sky cube, world-space hills)
+dropping for 20-30 flips every 10-15 s, but in the frames that is the camera swinging away from the hills.
+Ruled out besides the list above: the PVIDEO overlay (never on in RSC2) and the idle hitch present (needs 250 ms).
+Lead from the user's own `run.log`: terrain tile textures (DXT1 128x256 .. 512x1024) are re-decoded up to 6 times
+each, i.e. the game streams terrain textures into reused slots while driving; a tile drawn while its slot is being
+rewritten would flicker for a few frames. Not confirmed.
+
+Flight recorder for the user's runs (`d3d11_backend.c`, on in `run_rsc2.bat`): `RECOMP_D3D11_RING=<n>` keeps the last
+n presented frames on the GPU (120 at RES 2 is ~590 MB); F12 in the game window writes them to
+`flicker\<date_time>\NNN_f<flip>.bmp` with `stats.txt` (batches, triangles, triangles per vertex programme each
+flip). `RECOMP_D3D11_RING_AUTO=<pct>` saves by itself when a programme's triangles drop under pct% from one flip to
+the next (`RECOMP_D3D11_RING_VSH=<hash>` watches one programme), and the first trigger also fires
+`RECOMP_D3D11_LOGFILE`; `RECOMP_D3D11_FRAMEVSH=1` prints each flip's stats line as `[FVSH]`.
+
 **Black band along a road edge.** Seen once (g1, `frames\g1_crop.png`): a uniform near-black strip ~25 px wide
 between the road and the grass verge near the first house. Not seen again from other angles; may be a verge
 polygon the game shades dark. Not investigated further.

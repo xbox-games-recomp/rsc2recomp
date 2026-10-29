@@ -56,3 +56,6 @@ Thumbs.db
 /savedata/
 /pad_live.txt
 /saveroot/
+
+# Flight-recorder captures (F12 / RECOMP_D3D11_RING_AUTO)
+/flicker/
