@@ -3920,53 +3920,104 @@ static RT *memory_frame(void)
  * flip while a movie plays, and the loading screen is not drawn by the GPU at
  * all, so without this the window neither repaints nor answers Windows (the
  * "frozen" screen). */
-/* Nv2aBackend.zpass_begin/_end: a visibility test as a D3D11 occlusion query.
- * The title reads the result right away (GET_REPORT, then polls the report
- * slot), so end waits for it; samples are at s_res x s_res per guest pixel. */
-static ID3D11Query *s_zq;
-static int s_zq_open;
+/* Nv2aBackend visibility tests as D3D11 occlusion queries; samples are at
+ * s_res x s_res per guest pixel.
+ *
+ * zq_begin/zq_end/zq_poll (the default) never wait: each test gets a query
+ * from a pool and the executor writes the report once zq_poll has the
+ * answer. zpass_begin/zpass_end wait for the GPU at every test, which drains
+ * the whole queue ~28 times per race flip (42 flips/s with ~140 frames over
+ * 33 ms in a 48 s drive, against 160 without the wait). RECOMP_ZPASS_SYNC=1
+ * makes the executor use the waiting pair again. */
+#define ZQ_POOL 256
+static ID3D11Query *s_zq[ZQ_POOL];
+static unsigned char s_zq_busy[ZQ_POOL];
+static int s_zq_open = -1, s_zq_next;
+
+/* Guest pixels from samples. Round up: at RES 2 a sliver of 1-3 samples would
+ * floor to 0 pixels and the title culls something that is on screen.
+ * RECOMP_D3D11_ZPASS_FLOOR=1 floors again; RECOMP_D3D11_ZPASS_LOG=1 prints each
+ * test that flooring would zero. */
+static uint32_t zq_pixels(UINT64 n)
+{
+    static int floor_it = -1, log = -1;
+    UINT64 per = (UINT64)s_res * s_res;
+    if (floor_it < 0) {
+        floor_it = getenv("RECOMP_D3D11_ZPASS_FLOOR") && atoi(getenv("RECOMP_D3D11_ZPASS_FLOOR"));
+        log = getenv("RECOMP_D3D11_ZPASS_LOG") != NULL;
+    }
+    if (log && n && n < per)
+        fprintf(stderr, "[ZQ] flip %llu: %llu samples -> %s\n", (unsigned long long)s_flip_count,
+                (unsigned long long)n, floor_it ? "0 pixels (floored)" : "1 pixel");
+    n = floor_it ? n / per : (n + per - 1) / per;
+    return n > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)n;
+}
+
+static int be_zq_begin(void)
+{
+    D3D11_QUERY_DESC qd = { D3D11_QUERY_OCCLUSION, 0 };
+    int i, id = -1;
+    thread_check("zpass");
+    if (!ensure_init())
+        return -1;
+    for (i = 0; i < ZQ_POOL && id < 0; i++) {
+        int k = (s_zq_next + i) % ZQ_POOL;
+        if (!s_zq_busy[k])
+            id = k;
+    }
+    if (id < 0)
+        return -1;                      /* all in flight: the executor waits instead */
+    if (!s_zq[id] && FAILED(ID3D11Device_CreateQuery(s_dev, &qd, &s_zq[id])))
+        return -1;
+    s_zq_next = (id + 1) % ZQ_POOL;
+    s_zq_busy[id] = 1;
+    ID3D11DeviceContext_Begin(s_ctx, (ID3D11Asynchronous *)s_zq[id]);
+    return id;
+}
+
+static void be_zq_end(int id)
+{
+    if (id >= 0 && id < ZQ_POOL && s_zq_busy[id])
+        ID3D11DeviceContext_End(s_ctx, (ID3D11Asynchronous *)s_zq[id]);
+}
+
+/* 1 and the pixels once the GPU has answered (the id is then free again), 0
+ * while it has not. wait: block until it has; flush: let the call submit the
+ * queued work (else it only looks). */
+static int be_zq_poll(int id, int wait, int flush, uint32_t *pixels)
+{
+    UINT64 n = 0;
+    HRESULT hr;
+    if (id < 0 || id >= ZQ_POOL || !s_zq_busy[id]) {
+        *pixels = 0;
+        return 1;
+    }
+    do
+        hr = ID3D11DeviceContext_GetData(s_ctx, (ID3D11Asynchronous *)s_zq[id], &n, sizeof n,
+                                         (wait || flush) ? 0 : D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    while (hr == S_FALSE && wait);
+    if (hr == S_FALSE)
+        return 0;
+    s_zq_busy[id] = 0;
+    *pixels = FAILED(hr) ? 0 : zq_pixels(n);
+    return 1;
+}
 
 static void be_zpass_begin(void)
 {
-    D3D11_QUERY_DESC qd = { D3D11_QUERY_OCCLUSION, 0 };
-    thread_check("zpass");
-    if (!ensure_init())
-        return;
-    if (!s_zq && FAILED(ID3D11Device_CreateQuery(s_dev, &qd, &s_zq)))
-        return;
-    ID3D11DeviceContext_Begin(s_ctx, (ID3D11Asynchronous *)s_zq);
-    s_zq_open = 1;
+    s_zq_open = be_zq_begin();
 }
 
 static uint32_t be_zpass_end(void)
 {
-    UINT64 n = 0;
-    HRESULT hr;
-    if (!s_zq_open)
+    uint32_t px = 0;
+    int id = s_zq_open;
+    if (id < 0)
         return 0;
-    s_zq_open = 0;
-    ID3D11DeviceContext_End(s_ctx, (ID3D11Asynchronous *)s_zq);
-    while ((hr = ID3D11DeviceContext_GetData(s_ctx, (ID3D11Asynchronous *)s_zq, &n, sizeof n, 0)) == S_FALSE)
-        ;
-    if (FAILED(hr))
-        return 0;
-    /* Round up: at RES 2 a sliver of 1-3 samples would floor to 0 pixels and
-     * the title culls something that is on screen (far trees over a ridge
-     * dropping out for a few flips). RECOMP_D3D11_ZPASS_FLOOR=1 floors again;
-     * RECOMP_D3D11_ZPASS_LOG=1 prints each test that flooring would zero. */
-    {
-        static int floor_it = -1, log = -1;
-        UINT64 per = (UINT64)s_res * s_res;
-        if (floor_it < 0) {
-            floor_it = getenv("RECOMP_D3D11_ZPASS_FLOOR") && atoi(getenv("RECOMP_D3D11_ZPASS_FLOOR"));
-            log = getenv("RECOMP_D3D11_ZPASS_LOG") != NULL;
-        }
-        if (log && n && n < per)
-            fprintf(stderr, "[ZQ] flip %llu: %llu samples -> %s\n", (unsigned long long)s_flip_count,
-                    (unsigned long long)n, floor_it ? "0 pixels (floored)" : "1 pixel");
-        n = floor_it ? n / per : (n + per - 1) / per;
-    }
-    return n > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)n;
+    s_zq_open = -1;
+    be_zq_end(id);
+    be_zq_poll(id, 1, 1, &px);
+    return px;
 }
 
 static void be_idle(void)
@@ -4280,7 +4331,8 @@ static void be_flip(void)
 }
 
 static const Nv2aBackend s_backend = { be_clear, be_draw, be_flip, be_draw_ext, be_idle, be_vsh_gpu,
-                                        be_zpass_begin, be_zpass_end };
+                                        be_zpass_begin, be_zpass_end,
+                                        be_zq_begin, be_zq_end, be_zq_poll };
 
 void rsc2_d3d11_backend_register(void)
 {

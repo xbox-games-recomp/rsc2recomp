@@ -490,7 +490,8 @@ Fix: `Nv2aBackend.zpass_begin` / `zpass_end` (toolkit `nv2a_backend.h`, optional
 query when counting turns on (and after a CLEAR_REPORT_VALUE while on), closes it when counting turns off or a
 GET_REPORT reads while on, and adds the result to `zpass_count`. The D3D11 back end runs a
 `D3D11_QUERY_OCCLUSION` and waits for it in end (the title polls the report right away), scaling samples by
-`RECOMP_D3D11_RES`^2 to guest pixels. No visible cost: race flip rate unchanged in dumped runs.
+`RECOMP_D3D11_RES`^2 to guest pixels. ~~No visible cost: race flip rate unchanged in dumped runs.~~ Wrong: the wait
+at every test cost a third of the frame rate and caused steady stutter; fixed in 22.
 
 Verified in frame dumps (`frames\wheels_pair.png`; before g9, after w4): the AI cars have wheels with rims in the
 flyby and at the start line; the sunset flyby shots show no flare with the sun behind the trees.
@@ -520,6 +521,45 @@ old-rounding run (zb) the tree programme also dropped ~100 triangles two flips a
 Not proven at the user's exact spot: scripted driving does not reach it. The fixed build (z2) logged the same
 kind of tests as `-> 1 pixel`, and its frames are unchanged otherwise. Needs the user to confirm in
 `run_rsc2.bat`.
+
+**User (2026-10-29): still happens**, so rounding was not the cause, or not all of it; the rounding fix stays (it is
+correct either way). In the trees sample, `6B1E852A` keeps its draw count (19, 18, 19) but draws fewer triangles,
+which looks more like a lower level of detail than a culled object. RSC2 may lower detail when frames run slow,
+and the user's runs had steady 36-48 ms frames (22). Not tested: printing per-flip stats (`FRAMEVSH`) slows the
+run to ~32 flips/s either way, so a slow/fast comparison needs a cheaper probe. The other sample
+(`20261029_143918` 142-149) is not a dropout: the car pitches downhill and the far hills slide up behind the
+HUD's semi-transparent red progress bar.
+
+## 22. Race frame rate: visibility tests no longer wait for the GPU (toolkit + back end fix)
+
+User report: the frame rate regressed. It came from 20, not 21: `be_zpass_end` spun on `GetData` at every test,
+and RSC2 runs ~28 tests per race flip, so the GPU queue was drained ~28 times a frame and the CPU and GPU never
+overlapped. The launcher's hitch log (`RECOMP_D3D11_HITCH`) showed it as steady 36-48 ms frames with no texture
+or shader work in them.
+
+Measured on a fixed scripted 48 s drive on SS1 (RES 2, 240-frame ring, vsync on; flips/s from the dump file names,
+`[HITCH]` = frames over 33 ms):
+
+| build | flips/s | frames > 33 ms |
+|---|---|---|
+| 21, rounding floored (`RECOMP_D3D11_ZPASS_FLOOR=1`) | 39.1 | 171 |
+| 21 | 42.7 | 140 |
+| test hack: every test "visible", no wait | 162.0 | 0 |
+| 22 | 62.9 | 1 |
+
+Fix: optional `Nv2aBackend.zq_begin / zq_end / zq_poll` (toolkit `nv2a_backend.h`). The D3D11 back end gives
+each test its own occlusion query from a pool of 256 and polls without blocking. The executor collects a report's
+queries, and at GET_REPORT writes the slot only if nothing is pending. Otherwise it leaves the slot as D3D set it
+(incomplete) and writes timestamp, count and then the done word once every query has answered, polled from later
+reports and from the ack loop's idle hook (`nv2a_backend_idle`, which flushes). As on the console, the title sees a
+test incomplete for a while. A second GET_REPORT without a CLEAR first waits for the earlier report, because the
+count is a running total. A CLEAR hands its open queries to an empty report so their ids are freed. A full pool or
+report list falls back to waiting. `RECOMP_ZPASS_SYNC=1` restores the old wait at every test.
+
+The rest of the gap to 162 flips/s is probably the title waiting on some results itself (it polls the slot).
+
+Verified in frame dumps: the SS1 drive (pd) looks the same as before and race time now keeps pace with the dumps;
+the Single Race start line (w1, `frames\w1_now.png`) has all three AI cars with their wheels (the tests 20 is for).
 
 ## Next
 
