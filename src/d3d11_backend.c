@@ -1574,6 +1574,26 @@ static void set_viewport(uint32_t w, uint32_t h)
     ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
 }
 
+/* RECOMP_D3D11_LOGFILE: the flip to log once the trigger file appears (see be_draw_ext).
+ * Polled at most once per flip. */
+static int logfile_flip(void)
+{
+    static const char *path = (const char *)1;
+    static uint64_t polled = (uint64_t)-1, armed = (uint64_t)-1;
+    if (path == (const char *)1) path = getenv("RECOMP_D3D11_LOGFILE");
+    if (!path) return 0;
+    if (polled != s_flip_count) {
+        polled = s_flip_count;
+        if (armed == (uint64_t)-1 && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+            DeleteFileA(path);
+            armed = s_flip_count + 1;   /* the next flip from its start */
+            fprintf(stderr, "[D3D11] LOGFILE: logging flip %llu\n", (unsigned long long)armed);
+        }
+    }
+    if (armed != (uint64_t)-1 && s_flip_count > armed) armed = (uint64_t)-1;   /* re-arm */
+    return armed == s_flip_count;
+}
+
 static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
                      uint32_t flags, uint32_t argb, uint32_t zstencil)
 {
@@ -1598,7 +1618,7 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
             lf = -1;
             if (e) { lf = atol(e); le = lf; sscanf(e, "%ld-%ld", &lf, &le); }
         }
-        if (lf >= 0 && (long)s_flip_count >= lf && (long)s_flip_count <= le)
+        if ((lf >= 0 && (long)s_flip_count >= lf && (long)s_flip_count <= le) || logfile_flip())
             fprintf(stderr, "[D3D11] f%llu CLEAR after b%llu rt %08X %ux%u aa%u flags %X argb %08X zst %08X zeta %08X depth %g..%g\n",
                     (unsigned long long)s_flip_count, (unsigned long long)s_draws_this_flip, s->color_va, s->width, s->height,
                     s->aa_sx, flags, argb, zstencil, rs->zeta_va, rs->depth_min, rs->depth_max);
@@ -1663,6 +1683,7 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
 }
 
 static void dump_rt(const RT *r, int force);
+static void rt_alpha_stats(const RT *r);
 static void write_rt_bmp(const RT *r, const char *path);
 int g_dump_alpha;
 /* Every back-end entry point must run on one thread (the D3D11 immediate context is
@@ -2506,6 +2527,21 @@ static void be_draw_ext(const Nv2aSurface *s, const Nv2aBatch *b, const Nv2aBatc
                     }
             }
         }
+        /* RECOMP_D3D11_LOGFILE=<path>: when that file appears, log the next whole flip (draws
+         * here, clears in be_clear) and delete it -- for screens reached by hand / PAD_LIVE. */
+        if (logfile_flip()) {
+            /* ...and the target as it stands after a draw that sampled a render target
+             * (dumped at the next batch, i.e. before that one draws). */
+            static RT *after;
+            int k;
+            if (after) { fprintf(stderr, "    (target after the RT-sampling draw:)\n"); dump_rt(after, 1); after = NULL; }
+            log_batch(s_draws_this_flip - 1, s, b, x);
+            for (k = 0; k < s_rt_n; k++)
+                if (x->stage[0].valid && s_rt[k].va == x->stage[0].tex.offset && s_rt[k].tex) {
+                    rt_alpha_stats(&s_rt[k]);
+                    after = r;
+                }
+        }
         /* RECOMP_D3D11_LOGAT=<seconds since the first draw>: log the two flips after that time
          * (flip numbers differ between runs; wall time lands on the race reliably enough). */
         {
@@ -2855,6 +2891,12 @@ vertices_ready:
         ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
         ID3D11DeviceContext_PSSetShader(s_ctx, wbuffer_on(rs) ? s_psw : s_ps, NULL, 0);
         ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
+        /* Bind this draw's target before its textures: D3D11 silently binds NULL for
+         * a shader resource whose texture is still the bound render target, and the
+         * previous draw's target often is the texture now (RSC2's car-select preview:
+         * render the car into 8099C000, then sample it into the menu -- it read
+         * transparent black). Set again below with the final depth buffer choice. */
+        ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &r->rtv, z ? z->dsv : NULL);
         ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, bound);
         ID3D11DeviceContext_PSSetShaderResources(s_ctx, 5, 4, cubes);
         ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 4, smps);
@@ -3147,6 +3189,41 @@ grade_drawn:;
 
 /* RECOMP_D3D11_DUMP=<prefix>: write the presented surface to <prefix>NNNNN.bmp
  * every RECOMP_D3D11_DUMP_MS milliseconds (default 4000). */
+/* Pixel statistics of a render target (logged flips: a draw that samples one) --
+ * how much of it has colour and how much alpha, which a 24-bit dump cannot show. */
+static void rt_alpha_stats(const RT *r)
+{
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D *st = NULL;
+    D3D11_MAPPED_SUBRESOURCE m;
+    uint32_t x, y, rgb = 0, a_any = 0, a_full = 0, rgb_a0 = 0;
+
+    ID3D11Texture2D_GetDesc(r->tex, &td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &st)))
+        return;
+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)st, (ID3D11Resource *)r->tex);
+    if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m))) {
+        for (y = 0; y < td.Height; y++) {
+            const uint8_t *p = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
+            for (x = 0; x < td.Width; x++, p += 4) {
+                int c = p[0] | p[1] | p[2];
+                rgb += c != 0;
+                a_any += p[3] != 0;
+                a_full += p[3] == 255;
+                rgb_a0 += c && !p[3];
+            }
+        }
+        ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)st, 0);
+        fprintf(stderr, "    sampled RT %08X %ux%u: rgb!=0 %u, a>0 %u, a=255 %u, rgb!=0 with a=0 %u (of %u)\n",
+                r->va, td.Width, td.Height, rgb, a_any, a_full, rgb_a0, td.Width * td.Height);
+    }
+    ID3D11Texture2D_Release(st);
+}
+
 static void dump_rt(const RT *r, int force)
 {
     static const char *prefix = (const char *)-1;

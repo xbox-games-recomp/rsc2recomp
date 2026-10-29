@@ -258,9 +258,52 @@ Mileage, Hours Driven, License, Unlocks). Loading screen and movies unchanged.
 Also learnt: with vsync on (`run_rsc2.bat`) the movies play at real speed; with `RECOMP_D3D11_VSYNC=0` they run
 far faster than real time, so flip numbers and timings differ between the two.
 
+## 14. Car selection: preview shown alone on black (toolkit + back end fix)
+
+User report: on the car selection screen the 3D car was drawn on a black background instead of inside the menu.
+
+**Route** (headless, `RECOMP_PAD_LIVE` file, fresh save dir): Start x8 through the movies (lands on the profile
+name keyboard when no profile exists), down x4 + right x4 + A (Done), A (select the profile), A (CAREER), left + A
+(AMATEUR), A (first event, Novice Rally Invitational) -> CAR screen. Scripted as `to_carselect.ps1` in this
+session's scratchpad (copy the steps above if needed). The frame log trigger is new: `RECOMP_D3D11_LOGFILE=<path>`
+logs the next whole flip when that file appears (no flip number needed); during that flip a draw that samples a
+render target also prints the target's colour/alpha pixel counts and dumps the drawn-to surface right after it.
+
+**Frame** (one flip): menu into the display buffer (double-buffered `80028000` / `80280000`, pitch 2560), the car
+into `803AC000` (640x380, cleared to 0), then into `8099C000` (a real 1280x440 supersampled surface, pitch 5120),
+then b199 draws a quad (0,162)-(640,380) sampling `8099C000` with SRC_ALPHA blending into the menu, then the rest of
+the menu on top. Two bugs:
+
+1. **Wrong surface presented.** The executor's `note_drawn()` takes the biggest surface drawn since the last flip
+   as the frame (MM3 / Burnout 3 heuristics); `8099C000` is bigger than 640x480, so the car pass was presented.
+   Fix (toolkit): a surface whose pitch is the display mode's (AvSetDisplayMode) beats one that is not; area
+   (now in logical pixels, `drawn_area`) decides only between equals.
+2. **Render target sampled as transparent black.** The draw bound its textures (`PSSetShaderResources`) before
+   switching its render target. `8099C000` was still bound as the previous draw's target, so D3D11 silently bound
+   NULL in its place. Fix (`d3d11_backend.c`): bind the draw's render target before its textures.
+
+Found by: `[FSTAT]`/`RECOMP_D3D11_TRACE` showing flip surface `8099C000`; then the new alpha stats (`8099C000`
+had 490k opaque pixels at composite time) plus the after-draw dump showing b199 changed nothing.
+
+Verified in frame dumps (`frames\car12_sheet.png`): the car rotates inside the CAR menu with its floor reflection;
+loading screen, logos, intro movie, profile screens and keyboard, Main, Career and the Amateur chart unchanged.
+Not checked by the user yet.
+
+Seen on the way, not fixed (follow-ups):
+- The CAR screen still shows a few stray glyph fragments near the bottom ("a", "|", "ee"): probably partly drawn
+  stat widgets.
+- Saved profiles fail to load in a later run ("Unable to load <name>"); files are read without I/O errors, so
+  probably the save signature check (XCalculateSignature / kernel keys).
+- Single Race -> Rally -> SS1 -> A crashes deterministically in the game's heap free (`sub_00238F10`, called from
+  `0x000AA944`, freeing `[obj+0x48]` = `0x000ADF22`, a code address).
+- Runs started from this tool are redirected by the Claude app package (`%LOCALAPPDATA%` -> package LocalCache),
+  which splits the z: cache between two folders and produced rename collisions; `RECOMP_SAVE_DIR=<repo>\savedata`
+  keeps saves local (the Cache folder still goes through AppData).
+
 ## Next
 
-1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Next: explore the screens after it.
+1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection fixed (14), awaiting
+   the user's confirmation; then the race itself.
 2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
