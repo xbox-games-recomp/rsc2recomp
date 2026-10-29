@@ -59,3 +59,7 @@ Thumbs.db
 
 # Flight-recorder captures (F12 / RECOMP_D3D11_RING_AUTO)
 /flicker/
+
+
+# Launcher: per-user choices
+launcher.user.ini
