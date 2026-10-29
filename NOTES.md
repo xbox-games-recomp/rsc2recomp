@@ -334,12 +334,12 @@ top-down allocation. A top-down arena in the toolkit would fix them all, but wou
 semantics the pushbuffer executor uses (`xbox_ContiguousAllocatedBytes`), so it stays a per-game patch for now.
 
 Verified in frame dumps (`frames\cyc13_sheet.png`): Hyundai -> Skoda -> Mitsubishi -> Ford -> back to Seat, each
-with model or lock text and stat bars; no crash and no unresolved calls.
+with model or lock text and stat bars; no crash and no unresolved calls. **User-confirmed (2026-10-29).**
 
 ## Next
 
-1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15): first car
-   user-confirmed, cycling fixed and awaiting the user's confirmation; then the race itself.
+1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
+   **user-confirmed (2026-10-29)**. Next: the race itself.
 2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
