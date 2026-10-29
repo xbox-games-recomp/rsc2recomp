@@ -425,24 +425,12 @@ roll cage and the sky tint; the AI cars' windows look like glass.
 
 Found or reported in the same pass as 18; each is written up with what is known.
 
-**AI cars without wheels (seen in every race run).** In the race the AI cars' wheel arches are empty and show the
-ground (`frames\wheels.png`: red Mitsubishi, yellow Skoda); the player's rear wheels do draw. In the pre-race
-flyby the same cars have wheels (`frames\intro_wheels.png`), so they go between the flyby and the countdown.
-Known so far:
-- Not the HLSL vertex path: same with `RECOMP_D3D11_VSH_CPU=1`. No `[ICALL]` failures, no dropped batches.
-- In the flyby the tyre pixel is written last by vsh `EE32BE07` (one 172-triangle batch per car, the car's own
-  `c[15..18]`); position = `v0 + v7 * c[45 + a0].x`, a0 = `floor(v6.w * c[10].w + 0.25)` with c[10].w = 256.
-  In the race the same four batches are submitted with identical vertex data and state, c[45..48].x = 0, yet
-  three of them change no pixel at all (LOGSTEP filmstrip, `frames\step15`).
-- With `RECOMP_D3D11_NOCULL=1` a giant tyre tread appears at the bottom of the screen for some frames
-  (`frames\g22_f3.png`): some wheel geometry is drawn with a transform that puts it at the camera, inside out.
-  Which batch that is was not pinned down (the countdown frame logged in g23 did not show it).
-- The car-shadow quads (vsh `20DD05E9`, inline `DrawPrimitiveUP` data, so written by the game's CPU code) carry
-  `-inf/inf` texture coordinates for two of the four cars (`attr range ... NONFINITE` in the batch log). Bad
-  per-wheel / contact maths in the recompiled game code would explain both, but it is not proven.
-Next step: find the game function that fills the shadow quad (watch the pushbuffer inline data or the source array
-it copies) and the one that writes the wheel draw's matrix; compare against x87 semantics (FSINCOS order, FPREM,
-FPATAN, denormals - `c[47].w`/`c[48]` hold denormal junk).
+**AI cars without wheels**: fixed in 20 (visibility tests). The wheels were never drawn, in the flyby either: a
+dark backdrop behind the arches there looked like tyres, which sent the search above the wrong way for a while.
+
+**Car-shadow quads with inf texture coordinates.** The shadow quads (vsh `20DD05E9`, inline `DrawPrimitiveUP`
+data written by the game's CPU code) carry `-inf/inf` texture coordinates for two of the four cars (`attr range ...
+NONFINITE` in the batch log). Not looked at further; it may be an off-screen car's projection and harmless.
 
 **Terrain vanishing for 10-20 frames (user report).** Not reproduced in ~10 race runs. Ruled out: dropped batches
 (FRAMESTATS `d` always 0), a sudden triangle-count drop (`RECOMP_D3D11_DROPDUMP=50`: only the loading screen fired),
@@ -462,6 +450,29 @@ time advances faster than the dumps suggest. Not a rendering bug; noted for the 
 New debug knobs (`d3d11_backend.c`): `RECOMP_D3D11_BURSTFILE=<path>` dumps every flip while that file exists;
 `RECOMP_D3D11_LOGCONST=<a>-<b>` adds a vertex programme's constants to the batch log; the batch log now also gives
 each attribute slot's largest magnitude and non-finite count (`attr range`, tagged `NONFINITE`).
+
+## 20. AI cars drawn without wheels (toolkit + back end fix)
+
+In the race every AI car's wheel arches were empty, showing the ground through them; the player's wheels drew.
+RSC2 culls each AI wheel with a visibility test. Per wheel it draws an 89-triangle proxy (vsh `9A7BEA7C`, colour
+mask 0, depth write off) between `SET_ZPASS_PIXEL_COUNT_ENABLE` 1 and 0, reads the count with `GET_REPORT` and
+draws the wheel only if pixels passed. The executor counted zpass pixels only in its own software rasteriser,
+which does not run when a back end draws, so every report said 0 and no AI wheel was ever drawn (the flyby too).
+The player car's wheels are not tested.
+
+Found by: a flyby log and a countdown log of one run (same cars, same texture addresses) showed every car batch
+submitted in both, then a LOGSTEP pixel trace showing the flyby's "tyre" pixel was only the dark backdrop (b56).
+The untextured, colour-masked per-wheel proxies were the giveaway. A test build that reported any draw as visible
+brought the wheels back, but also showed the sun flare when the sun was behind trees, so it was not kept.
+
+Fix: `Nv2aBackend.zpass_begin` / `zpass_end` (toolkit `nv2a_backend.h`, optional). The executor opens a back end
+query when counting turns on (and after a CLEAR_REPORT_VALUE while on), closes it when counting turns off or a
+GET_REPORT reads while on, and adds the result to `zpass_count`. The D3D11 back end runs a
+`D3D11_QUERY_OCCLUSION` and waits for it in end (the title polls the report right away), scaling samples by
+`RECOMP_D3D11_RES`^2 to guest pixels. No visible cost: race flip rate unchanged in dumped runs.
+
+Verified in frame dumps (`frames\wheels_pair.png`; before g9, after w4): the AI cars have wheels with rims in the
+flyby and at the start line; the sunset flyby shots show no flare with the sun behind the trees.
 
 ## Next
 

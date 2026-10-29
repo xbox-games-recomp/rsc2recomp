@@ -3898,6 +3898,40 @@ static RT *memory_frame(void)
  * flip while a movie plays, and the loading screen is not drawn by the GPU at
  * all, so without this the window neither repaints nor answers Windows (the
  * "frozen" screen). */
+/* Nv2aBackend.zpass_begin/_end: a visibility test as a D3D11 occlusion query.
+ * The title reads the result right away (GET_REPORT, then polls the report
+ * slot), so end waits for it; samples are at s_res x s_res per guest pixel. */
+static ID3D11Query *s_zq;
+static int s_zq_open;
+
+static void be_zpass_begin(void)
+{
+    D3D11_QUERY_DESC qd = { D3D11_QUERY_OCCLUSION, 0 };
+    thread_check("zpass");
+    if (!ensure_init())
+        return;
+    if (!s_zq && FAILED(ID3D11Device_CreateQuery(s_dev, &qd, &s_zq)))
+        return;
+    ID3D11DeviceContext_Begin(s_ctx, (ID3D11Asynchronous *)s_zq);
+    s_zq_open = 1;
+}
+
+static uint32_t be_zpass_end(void)
+{
+    UINT64 n = 0;
+    HRESULT hr;
+    if (!s_zq_open)
+        return 0;
+    s_zq_open = 0;
+    ID3D11DeviceContext_End(s_ctx, (ID3D11Asynchronous *)s_zq);
+    while ((hr = ID3D11DeviceContext_GetData(s_ctx, (ID3D11Asynchronous *)s_zq, &n, sizeof n, 0)) == S_FALSE)
+        ;
+    if (FAILED(hr))
+        return 0;
+    n /= (UINT64)s_res * s_res;
+    return n > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)n;
+}
+
 static void be_idle(void)
 {
     uint64_t now = GetTickCount64();
@@ -4092,7 +4126,8 @@ static void be_flip(void)
     }
 }
 
-static const Nv2aBackend s_backend = { be_clear, be_draw, be_flip, be_draw_ext, be_idle, be_vsh_gpu };
+static const Nv2aBackend s_backend = { be_clear, be_draw, be_flip, be_draw_ext, be_idle, be_vsh_gpu,
+                                        be_zpass_begin, be_zpass_end };
 
 void rsc2_d3d11_backend_register(void)
 {
