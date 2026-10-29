@@ -294,9 +294,8 @@ Seen on the way, not fixed (follow-ups):
 - ~~Stray glyph fragments near the bottom of the CAR screen~~: they were the stat bars missing a vtable function;
   fixed in 15.
 - ~~Saved profiles fail to load in a later run~~: not the signature; an empty directory-query pattern, fixed in 16.
-- Single Race -> Rally -> SS1 -> A crashes deterministically in the game's heap free (`sub_00238F10`, called from
-  `0x000AA944`, freeing `[obj+0x48]` = `0x000ADF22`, a code address). Same crash site and fault address as 15,
-  so probably fixed by it; not re-run.
+- ~~Single Race -> Rally -> SS1 -> A crashes deterministically in the game's heap free (`sub_00238F10`, called from
+  `0x000AA944`, freeing `[obj+0x48]` = `0x000ADF22`, a code address)~~: fixed by 15, re-run in 17.
 - Runs started from this tool are redirected by the Claude app package (`%LOCALAPPDATA%` -> package LocalCache),
   which splits the z: cache between two folders and produced rename collisions; `RECOMP_SAVE_DIR=<repo>\savedata`
   keeps saves local (the Cache folder still goes through AppData). `RECOMP_SAVE_ROOT` (16) now moves the whole
@@ -365,10 +364,32 @@ happen; the user's runs from `run_rsc2.bat` are not redirected.
 Verified in frame dumps (`frames\sav15_sheet.png`): profile created in one run, the next run lists it with its
 stats (0/2420 points, license E) and A goes to Main.
 
+## 17. Racing works (no changes needed)
+
+First race attempt, on the build from 16 (ae37c8c). Both routes load a stage and drive; no code change was needed.
+
+- **Career**: Main -> CAREER -> left + A (AMATEUR) -> A (Novice Rally Invitational) -> CAR, A -> race-day info, A
+  -> stage menu (QUIT / START RACE / CAR TUNING / OPTIONS), A -> SS1 Cooper Hill I (Australia), solo against the
+  clock. Countdown lights, then the race timer runs in real time (2.0 s of race time per 2 s dump interval).
+- **Single Race**: Main -> SINGLE RACE (left of CAREER) -> RACE TYPE, right + A (RALLY) -> RALLY TRACK, A (SS1) ->
+  RACE SETTINGS, A -> CAR, A -> tips/loading, A (START RACE). The same stage with 3 AI cars, their name tags and
+  POS n/4. The heap-free crash of 14 is gone, so 15 fixed it.
+
+Pad, through `pad_live.txt`: `rt` = throttle (1st to 4th gear, 119 km/h on the first straight), `lt` = brake /
+reverse (gear R), `lleft`/`lright` steer (the car turned off the road into the bushes). The stage file
+`LocationAustralia_R1.fa` sits in `Layer1`; the game probes `d:\Layer0\` first, and the other failed opens in the
+log (`d:\Tracks\...`, `d:\Cars\Accent.tpl`, `z:\Audio\*.wbd`) are loose-file probes before the `.fa` lookup. No
+`[ICALL]` failures or stubs in either run.
+
+Frames look right: lit terrain, shadows, foliage, billboards, opponent cars, HUD (tacho, speed, gear, split
+arrows, progress bar, race time). The car's rear window draws flat black; it may be tinted glass, not checked
+against the console. Verified in frame dumps (`frames\r1_sheet.png`, `r1_sheet2.png`, `r1_full79.png`,
+`s1_pair.png`); still needs the user to drive in `run_rsc2.bat`.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
-   **user-confirmed (2026-10-29)**. Next: the race itself.
+   **user-confirmed (2026-10-29)**. Racing (17): verified in frame dumps, needs the user to drive.
 2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
    Z/X = A/B, arrows = D-pad).
 3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
