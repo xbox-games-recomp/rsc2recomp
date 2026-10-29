@@ -309,6 +309,176 @@ void sub_00082E25(void)
     g_eax = from;                             /* the switcher's eax was its target */
 }
 
+/* ── XAPI gamepad (XPP section) replaced at the API level (NOTES 12) ──────────
+ *
+ * As in MM3 (MM3 NOTES 13/14): XInitDevices starts XAPI's USB stack, whose
+ * enumeration never completes against the emulated OHCI controller, so the
+ * title never sees a pad and ignores Start on the title screen. RSC2 polls
+ * XGetDeviceChanges (not XGetDevices, which it does not link) and then opens
+ * the port it was told about; these answer from the toolkit's pad report
+ * (usb_gamepad_report: host XInput pad, RECOMP_KEYBOARD, RECOMP_PAD_PRESS /
+ * _SCRIPT / _LIVE test input). Matched against MM3's XPP by code shape; the
+ * XInput bodies are instruction-for-instruction MM3's, so the XINPUT_STATE /
+ * XINPUT_FEEDBACK layouts are the same.
+ *
+ * 0x376898 is XDEVICE_TYPE_GAMEPAD in this binary (XInputOpen's type argument).
+ */
+extern int usb_gamepad_report(int pad, uint8_t *out, int max);
+
+#define RSC2_XDEVICE_TYPE_GAMEPAD 0x00376898u
+#define RSC2_PAD_HANDLE           0x00376100u   /* opaque cookie; only handed back */
+
+/* RECOMP_PAD_TRACE=1: log the first few calls of each overridden XAPI input
+ * function (which of them the game really uses, and with what). */
+static int rsc2_pad_trace(int idx, const char *what, uint32_t a, uint32_t b)
+{
+    static int on = -1;
+    static unsigned long n[8], lastprint[8];
+    unsigned long now;
+    if (on < 0) { const char *e = getenv("RECOMP_PAD_TRACE"); on = e && *e && *e != '0'; }
+    if (!on) return 0;
+    n[idx]++;
+    now = (unsigned long)GetTickCount();
+    /* first 3 calls, then at most one line per 5 s with the running count */
+    if (n[idx] > 3 && now - lastprint[idx] < 5000) return 0;
+    lastprint[idx] = now;
+    fprintf(stderr, "  [PADAPI] %s #%lu (0x%08X, 0x%08X)\n", what, n[idx], a, b);
+    fflush(stderr);
+    return 1;
+}
+
+/* BOOL XGetDeviceChanges(PXPP_DEVICE_TYPE, PDWORD insertions, PDWORD removals):
+ * stdcall, ret 12. Report the pad in port 0 as inserted once; afterwards no
+ * changes. Keeps the type struct's connected mask (+0) and last-reported mask
+ * (+8) as the original would leave them. Other device types (memory units,
+ * voice) never change. */
+void sub_00377A69(void)
+{
+    static volatile long reported;
+    uint32_t t = MEM32(g_esp + 4);
+    uint32_t pins = MEM32(g_esp + 8), prem = MEM32(g_esp + 12);
+    uint32_t ins = 0;
+
+    if (t == RSC2_XDEVICE_TYPE_GAMEPAD) {
+        if (!_InterlockedExchange(&reported, 1))
+            ins = 1;
+        MEM32(t) = 1;
+        MEM32(t + 4) = 0;
+        MEM32(t + 8) = 1;
+    }
+    rsc2_pad_trace(0, "XGetDeviceChanges", t, ins);
+    MEM32(pins) = ins;
+    MEM32(prem) = 0;
+    g_eax = ins;
+    g_esp += 16; /* ret 12 */
+}
+
+/* DWORD XGetDeviceEnumerationStatus(void): cdecl, no args. The USB stack's
+ * enumeration never settles here; report XDEVICE_ENUMERATION_IDLE. */
+void sub_0037932B(void)
+{
+    rsc2_pad_trace(6, "XGetDeviceEnumerationStatus", 0, 0);
+    g_eax = 0;
+    g_esp += 4; /* ret */
+}
+
+/* HANDLE XInputOpen(type, port, slot, pPollingParameters): stdcall, ret 16. */
+void sub_0037E356(void)
+{
+    uint32_t t = MEM32(g_esp + 4);
+    uint32_t port = MEM32(g_esp + 8);
+    rsc2_pad_trace(1, "XInputOpen", t, port);
+    g_eax = (t == RSC2_XDEVICE_TYPE_GAMEPAD && port == 0) ? RSC2_PAD_HANDLE : 0;
+    g_esp += 20; /* ret 16 */
+}
+
+/* void XInputClose(HANDLE): stdcall, ret 4. */
+void sub_0037E3AC(void)
+{
+    rsc2_pad_trace(2, "XInputClose", MEM32(g_esp + 4), 0);
+    g_eax = 0;
+    g_esp += 8; /* ret 4 */
+}
+
+/* DWORD XInputGetState(HANDLE, PXINPUT_STATE): stdcall, ret 8.
+ * XINPUT_STATE: DWORD packet; WORD wButtons; BYTE analog[8] (A B X Y Black
+ * White LT RT); SHORT LX, LY, RX, RY. The USB report carries the same bytes at
+ * 2 (digital), 4..11 (analog) and 12..19 (sticks). */
+void sub_0037E590(void)
+{
+    static uint32_t packet;
+    static uint8_t last[20];
+    uint32_t st = MEM32(g_esp + 8);
+    uint8_t r[20];
+    int i;
+
+    memset(r, 0, sizeof r);
+    usb_gamepad_report(0, r, 20);
+    rsc2_pad_trace(3, "XInputGetState", MEM32(g_esp + 4), (uint32_t)r[2] | ((uint32_t)r[4] << 8));
+    if (memcmp(r + 2, last + 2, 18) != 0) {
+        packet++;
+        memcpy(last, r, sizeof last);
+    }
+    MEM32(st) = packet;
+    MEM16(st + 4) = (uint16_t)r[2];
+    for (i = 0; i < 8; i++)
+        MEM8(st + 6 + i) = r[4 + i];
+    for (i = 0; i < 4; i++)
+        MEM16(st + 14 + 2 * i) = (uint16_t)(r[12 + 2 * i] | (r[13 + 2 * i] << 8));
+    g_eax = 0; /* ERROR_SUCCESS */
+    g_esp += 12; /* ret 8 */
+}
+
+/* DWORD XInputGetCapabilities(HANDLE, PXINPUT_CAPABILITIES): stdcall, ret 8. */
+void sub_0037E3B8(void)
+{
+    uint32_t caps = MEM32(g_esp + 8);
+    rsc2_pad_trace(4, "XInputGetCapabilities", MEM32(g_esp + 4), caps);
+    MEM8(caps) = 1; /* SubType: gamepad */
+    g_eax = 0;
+    g_esp += 12; /* ret 8 */
+}
+
+/* DWORD XInputSetState(HANDLE, PXINPUT_FEEDBACK): stdcall, ret 8 (rumble).
+ * XINPUT_FEEDBACK is packed: header (DWORD dwStatus, HANDLE hEvent, BYTE
+ * Reserved[58]) then XINPUT_RUMBLE at +0x42 (left, low-frequency motor) and
+ * +0x44 (right). Forwarded to host pad 0 through the toolkit only when the
+ * speeds change; RECOMP_RUMBLE=0 turns it off. Reported complete: a title skips
+ * a new request while dwStatus is ERROR_IO_PENDING. */
+typedef struct { uint16_t left, right; } rsc2_vibration;
+extern unsigned long xbox_InputSetState(unsigned long port, const rsc2_vibration *v);
+
+static void rsc2_rumble_off(void)
+{
+    rsc2_vibration v = { 0, 0 };
+    xbox_InputSetState(0, &v);
+}
+
+void sub_0037E603(void)
+{
+    static int on = -1;
+    static rsc2_vibration last;
+    uint32_t fb = MEM32(g_esp + 8);
+    rsc2_vibration v;
+
+    if (on < 0) {
+        const char *e = getenv("RECOMP_RUMBLE");
+        on = !(e && *e == '0');
+        if (on)
+            atexit(rsc2_rumble_off);   /* XInput keeps the motors running */
+    }
+    v.left = MEM16(fb + 0x42);
+    v.right = MEM16(fb + 0x44);
+    rsc2_pad_trace(5, "XInputSetState", v.left, v.right);
+    /* a pad that was unplugged gets the current speeds once it is back */
+    if (on && (v.left != last.left || v.right != last.right)
+        && xbox_InputSetState(0, &v) == 0)
+        last = v;
+    MEM32(fb) = 0;
+    g_eax = 0;
+    g_esp += 12; /* ret 8 */
+}
+
 /*
  * ===== MM3 reference overrides (NOT built) =====================================
  * Everything up to the matching #endif is Midtown Madness 3's set, at MM3 guest

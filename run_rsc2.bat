@@ -3,7 +3,8 @@ rem Launches the recompiled RalliSport Challenge 2 from this folder so that
 rem game_files\default.xbe is found. Log output goes to run.log.
 rem Extra arguments are passed to the exe, e.g. run_rsc2.bat --headless
 rem
-rem STATE: bring-up (not booting yet). See NOTES.md.
+rem STATE: bring-up. Boots to the title and the profile menus on the GPU; input works
+rem (keyboard: Enter = Start, Z/X/C/V = A/B/X/Y, arrows = D-pad, or an XInput pad). See NOTES.md.
 
 cd /d "%~dp0"
 

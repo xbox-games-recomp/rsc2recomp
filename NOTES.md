@@ -197,13 +197,45 @@ title screen with correct colours**, then the attract-mode movie loop. No crash 
 - Flips run uncapped with `RECOMP_D3D11_VSYNC=0` (thousands per second on movies); not looked at yet.
 - Not checked: audio output (no `RECOMP_AUDIO_WAV` measurement yet).
 
+## 12. Gamepad: XAPI input answered at the API level
+
+`scripts/xrefs.py <xbe> .text <lo> <hi>` lists the game's direct calls into a section. MM3's game calls 9 XPP
+functions, RSC2's 12; matched by code shape (identical instruction sequences, other addresses):
+
+| XAPI | MM3 | RSC2 | override |
+|---|---|---|---|
+| XGetDeviceChanges(type, *ins, *rem), ret 12 | 0035A83F | `00377A69` | pad in port 0 inserted once |
+| XGetDeviceEnumerationStatus(), ret | -- | `0037932B` | IDLE (0) |
+| XInitDevices | 00361666 | 0037D708 | not overridden |
+| XInputOpen, ret 16 | 00361BCF | `0037E356` | handle for gamepad port 0 |
+| XInputClose, ret 4 | 00361C25 | `0037E3AC` | no-op |
+| XInputGetCapabilities, ret 8 | 00361C31 | `0037E3B8` | SubType gamepad |
+| XInputGetState, ret 8 | 00361E0F | `0037E590` | from `usb_gamepad_report` |
+| XInputSetState, ret 8 | 00361E7B | `0037E603` | rumble -> host pad 0 |
+
+RSC2 does not link XGetDevices; it polls XGetDeviceChanges every frame. Device types: `0x376898` gamepad
+(XInputOpen's argument), `0x376A68` and `0x3769D4` / `0x3769E0` (memory unit / voice; never report changes).
+`RECOMP_PAD_TRACE=1` logs the calls.
+
+Verified in frame dumps (`frames\pad2_sheet.png`, `RECOMP_PAD_PRESS=0x10`): Start skips the movies, passes
+"PRESS START", opens **Select Profile -> Create new Profile** and the on-screen name keyboard. Not yet checked
+with a real pad or the keyboard mapping in the window (needs the user).
+
+Keyboard screen draws the keys without their letters. At the same time an indirect jump to `0x000A2454` failed
+~40,000 times: CRT x87 special-case fragments (`fstp; fstp; fldz; ret` = "return 0.0") dispatched through a
+table in `.data` at `0x4151AC` (`A24F6 A248F A2454 A248D A24B7`). All five seeded (regen 8): the failures are
+gone (pad3 run), **but the key letters are still missing**, so that was not the cause. Other text on the same
+screen ("SELECT PROFILE", "Select", "Back") draws. `wbinvd` at the seeded `0x002A9700` (a cache flush at the top
+of a function) is reached ~48 times: a no-op, fine.
+
 ## Next
 
-1. **Input.** A run with `RECOMP_PAD_PRESS=0x10` stayed on the title screen (`frames\pad1_sheet.png`): XPP is
-   swept, so the real XAPI USB stack runs against the emulated OHCI and never enumerates a pad (MM3 #13/#14).
-   Re-locate XGetDevices / XInputOpen / XInputGetState / XInputGetCapabilities / XInputSetState / XInputClose in
-   RSC2's XPP section (`0x00376860..`) and port MM3's overrides (section 4 list).
-2. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
-3. XNet "no network" handling once menus are reachable (Live / System Link screens). In RSC2's D3D no code
+1. **On-screen keyboard without key letters** (`frames\pad3_last.png`). Start with one `RECOMP_D3D11_LOGFRAME`
+   on that screen: are the glyph quads drawn at all (then texture / combiner / alpha, compare with the xemu shader
+   cache), or never submitted (then game side: font/glyph path)?
+2. Gamepad and keyboard in the live window need the user (`run_rsc2.bat`; RECOMP_KEYBOARD: Enter = Start,
+   Z/X = A/B, arrows = D-pad).
+3. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
+4. XNet "no network" handling once the Live / System Link screens are reached. In RSC2's D3D no code
 uses 0x8700/0x8704 as an immediate, so 5849's overlay code is shaped differently: find it from the watchdog when
 it hangs. `0x36F64E` initialises the PVIDEO registers (0x8900..0x8930 block) and is a good starting point.
