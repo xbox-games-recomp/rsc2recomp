@@ -1,0 +1,209 @@
+# RalliSport Challenge 2 static recompilation -- engineering notes
+
+Scaffolded 2026-10-28 from [mm3recomp](https://github.com/taxidriverhk/mm3recomp) (Midtown Madness 3; same
+studio, DICE). Items are numbered like mm3recomp's NOTES.md ("MM3 #n" refers to that file).
+
+Layout: toolkit = submodule `xboxrecomp\` pinned to v0.15.0 (6376eb8) with mm3recomp's
+`patches\xboxrecomp.patch` (game-agnostic fixes) applied by `apply_patches.ps1`. Game files:
+`D:\Documents\Xbox Recompilation\rsc2_files`, junctioned in as `game_files\` (ignored, never committed).
+
+## 1. XBE fingerprint
+
+| | |
+|---|---|
+| Title | RalliSport Challenge 2, retail, title ID `0x4D530039` |
+| Build | 2004-04-02 18:32:23 UTC (cert 2004-04-06), region NA/JP/RoW, DVD_X2 |
+| XDK | **5849** for every library (MM3 was 5233: MM3 byte patterns will *not* match the XDK code 1:1) |
+| Debug path | `d:\code\projects\rsc2\code\rsc2\Rsc2\retail\aRSC2retail64.exe` |
+| SHA-1 | `45ee3898ac1c6336f241cc8502a7bbd46673fe71` (`default.xbe`, 4,718,592 bytes) |
+| Base / size | `0x00010000` / `0x005AE120` |
+| Entry | `0x00070315` (set in `src/main.c`) |
+| Kernel thunks | `0x0037F960`, 157 imports |
+| TLS | index at `0x00415200`, 164 bytes zero fill, no data template |
+| Libraries | XAPILIB, XBOXKRNL, LIBCPMT, LIBCMT, XONLINLS, XVOICE, DSOUND, D3D8LTCG, XGRAPHCL |
+
+Sections (34), with MM3's size for comparison where it has the same section:
+
+| Section | VA | Size | MM3 size | Notes |
+|---|---|---|---|---|
+| .text | 0x00012000 | 0x2DC124 | 0x247180 | game + LTCG'd D3D/CRT |
+| XONLINE | 0x002EE140 | 0x21A64 | | Xbox Live |
+| XNET | 0x0030FBC0 | 0x12A70 | | network stack |
+| DSOUND | 0x00322640 | 0x1E8CC | 0x1FD6C | |
+| BINK* (16 sections) | 0x00340F20.. | small | | Bink codec variants |
+| WMADEC | 0x00355840 | 0xE10C | 0x18EFC | music is `.wma` inside `Music.fa` |
+| D3D | 0x00363960 | 0x12CCC | 0x137E8 | |
+| XGRPH | 0x00376640 | **0x214** | 0x1D994 | no runtime shader assembler (MM3 #28 does not apply as such) |
+| XPP | 0x00376860 | 0x90FC | 0x8CF0 | USB/XAPI input -> override at API level |
+| .rdata / .data | 0x0037F960 / 0x003BEE40 | 0x3F4C8 / 0x197E78 | | |
+| XON_RD, DOLBY, .data1, BINKDATA | | | | data |
+| $$XTIMAGE, $$XSIMAGE, DIRTY, .XTLID | | | | insertable (not loaded at boot) |
+
+Absent compared with MM3: **XACTENG** (no XACT engine linked), **D3DX**, **WMVDEC**.
+
+## 2. `--extra-sections` (initial choice)
+
+`DSOUND,WMADEC,XGRPH,D3D` (in `regen.ps1`).
+
+- DSOUND, WMADEC: MM3 #19 -- unswept sound libraries were the DirectSound crash.
+- XGRPH: only 0x214 bytes here, cheap to include.
+- D3D: MM3 left it unswept and its one recompiler flags bug was there (MM3 #37); trying it swept from the start.
+  If the build or boot regresses because of it, drop it and record why.
+- Not swept: XPP (replaced by XAPI overrides), XONLINE/XNET (stub to "no network"), BINK* (MM3 did not need
+  them swept; watch for ICALL bursts there during movies).
+
+## 3. Disc and data formats
+
+- Disc image is a plain XDVDFS game partition at offset 0 (no video partition), 6.66 GB. Extracted with a
+  `scripts\xiso_extract.py <iso> <outdir>` (139 files); extract-xiso works too
+
+- Root: `default.xbe` plus `dashupdate.xbe`, `update.xbe`, `downloader.xbe` (Live content/dash updates; ignore).
+- `Layer0\`, `Layer1\`: 119 `*.fa` = DICE **FlatArchive** (`FlatArchive.cpp` in the XBE). Header is
+  `u32 compressed, u32 uncompressed` then a zlib stream; the first block is a directory of fixed-size records
+  (FILETIME, offset, size, index, name). One archive per location (`Location*.fa`), per stage
+  (`Track<Country>_<Type>_<n>.fa`), plus `Cars.fa`, `MenuDVD.fa`/`MenuHDD.fa`, `Music.fa`, `TrackMisc.fa`, fonts.
+  Paths look like `RSC2\Content\Tracks\...`; `MenuHDD.fa` suggests a copy-to-HDD cache step at boot.
+- Member types (all archives' directories): `.prop` 6705, `.res` 2923, `.dat` 1382, `.aip` 106 (AI paths),
+  `.cam` 86, `.pn` 78 (pace notes), `.tpl`/`.lpt` (cars), `.wbd` 27 (wave banks: announcer, codriver,
+  environment, static), `.wma` 27 (music), `.tree`, `.b`/`.baf`/`.ba` (animation), `.xbx` 5 (save images),
+  `.bin` 5 (`dsp3d.bin`, `dspmono.bin`, `dspstereo.bin`, `hotspot.bin`), `.snd` (`global.snd`), `.txt`.
+- **No `.psh`/`.vsh`/`.cvsx` anywhere** and no shader-version strings in the XBE: shaders are precompiled,
+  presumably inside `.res` resources or `.rdata`. Expect NV2A microcode / register combiner state to arrive
+  directly in the pushbuffer.
+- **Custom APU DSP programs** (`dsp3d/dspmono/dspstereo.bin`, plus the `DOLBY` section): the game loads its own
+  GP DSP images. Audio may need more than MM3's DirectSound path (MM3 #25) if the effects chain depends on
+  them running.
+- `Movies\`: `dice.bik`, `dolby.bik`, `intro.bik` (97 MB), `mslogo.bik`, `mslogo_ws.bik` (widescreen), `xsn.bik`
+  (XSN Sports). Bink -> PVIDEO overlay as in MM3 #29 (needs the overlay-stop override).
+- `Media\`: `Sound.xsb`/`Wave.xwb` (no XACT engine linked, not referenced by name in the XBE), `dlcustom.xpr`,
+  `ArialUni.Ttf` (23 MB, Live UI / Japanese text).
+- `Locale\<lang>\localestrings.str`.
+- Engine source names in the XBE (43 `.cpp`): `Renderer.cpp`, `Texture.cpp`, `Track\TrackTextureStreamer.cpp`,
+  `Track\TrackMesh.cpp`, `Mesh\MeshManager.cpp`, `Modules\GameModuleEnvmap.cpp`, `Script\ScriptVM.cpp`,
+  `Memory\MemoryHeapManager.cpp`, `CacheManager.cpp`, `PersistentContentManager.cpp`, `Win32FileSystem.cpp`,
+  `MainOptimatchHostScreen.cpp` / `MainQuickmatchScreen.cpp` (Live), ... Different engine code from MM3 (no Lua
+  scripts; own script VM), so expect fewer shared game-side quirks than the studio overlap suggests.
+
+## 4. MM3 overrides still to re-locate
+
+`src/recomp_manual.c` keeps MM3's overrides inside `#if 0 /* MM3 reference */`. Each needs its RSC2 address
+(XDK 5849, so use `tools.func_id` output, string xrefs, watchdog dumps and behaviour; byte patterns from the
+5233 build are only a hint):
+
+- [ ] D3D_BlockOnTime (GPU fence wait, honest with RECOMP_PB_EXEC) + device-pointer global
+- [ ] D3D overlay stop (PVIDEO, Bink)
+- [ ] XGetDevices / XInputOpen / XInputClose / XInputGetState / XInputGetCapabilities / XInputSetState
+      (+ the XDEVICE_TYPE_GAMEPAD struct address)
+- [ ] XNet status ("no network") and the XNet receive callback; RSC2 has Live + System Link, so expect more
+      network waits than MM3
+- [ ] `RECOMP_DSTRACE` needs an RSC2 `dstrace.inc` if sound tracing is wanted
+
+## 5. First regen + boot (2026-10-28)
+
+Regen 1 (`DSOUND,WMADEC,XGRPH,D3D`): 17,562 functions, 138 unresolved stubs, builds (~10 min end to end).
+The `NativeCommandError` in the regen log is PowerShell wrapping the recompiler's stderr progress line: harmless.
+
+Boot 1 hung in a `Sleep(0)` loop (kernel ordinal 99, ~4.6 M calls/s). Cause: XNET `sub_0030FE52` (network
+startup) takes a spin lock at `0x415874` with `cmpxchg`, then `je 0x30FE7C` -- a branch *inside the same
+function*. XNET was unswept, so the lifter made 0x30FE7C a separate function that was never generated: an
+unresolved stub that returned with the lock held, and every later caller spun. Same class as MM3 #19 (half-lifted
+library code). Fix: sweep XNET (and XONLINE, BINK, which the disassembler flagged as call targets into unswept
+code). `scripts/xdis.py <va> [n]` (capstone over the XBE section table) was enough to read the spin.
+
+## 6. GPU fence wait (D3D_BlockOnTime) re-located
+
+Boot 3 stopped right after D3D init (640x480, interrupt vector 3 connected) with the game thread spinning in guest
+code (no kernel calls, no ICALLs). Stack top return `0x00118259` follows `call 0x367F40`. MM3's fence-check byte
+sequence `8b4630 8b08 8b462c 8bd0 2bd1` occurs once in RSC2's D3D, at `0x00367F4A`:
+
+- `sub_00367F40` = BlockOnTime. **XDK 5849 passes the fence in EAX** (MM3/5233: on the stack); one stack arg
+  (flags), `ret 4`.
+- Device pointer global: `0x00375418` (MM3: `0x351F48`). Kick-newest-fence: `sub_00367C60(0)`, `ret 4`.
+
+Override in `src/recomp_manual.c` (honest with `RECOMP_PB_EXEC`, `RECOMP_D3D_FENCE_FAKE=1` restores the fake).
+Boot 4 logs `[D3D] GPU semaphore at 0x804EC000 (fence wait is honest)` and gets past it.
+
+## 7. Library sweep, final shape (so far)
+
+Seeding from boot 3 produced 33 stubs inside XPP. Seeding part of a library section is the MM3 #12 trap, so XPP
+is swept whole instead (the XInput API overrides still go on top). Current `--extra-sections`:
+`DSOUND,WMADEC,XGRPH,D3D,XNET,XONLINE,XPP` + every BINK section. Regen 3: 18,868 functions, 4 stubs.
+
+**Toolkit fix:** `tools/disasm/disasm.py` looked extra sections up with `get_section(name)`, which returns one
+section per name. RSC2 has four sections named `BINKYUY2`, so only one was swept and Bink's YUY2 blitter
+(`0x00344F19`) stayed a stub. Now every section with a matching name is added (in `patches/xboxrecomp.patch`).
+
+## 8. Boot 4: archives, HDD cache, first movie
+
+With the fence fixed the title opens `d:\Layer0\{Cars,Music,Misc,MenuDVD,FontsEnglish,MenuHDD,TrackMisc}.fa`,
+copies `Misc.fa`/`FontsEnglish.fa`/`MenuHDD.fa` to the `z:` utility-drive cache, probes the soundtrack DB
+(`TDATA\FFFE0000\MUSIC\ST.DB`, absent: fine), and opens `d:\movies\dice.bik`. Bink then hit the unswept-BINKYUY2
+stub (7) and the title crashed in a heap routine (`sub_0007418E+0x507`, write to 0xFFFFFFFF) -- treated as
+fallout of the half-run Bink code until shown otherwise. Also seen: ICALL to `0x00376AE4` (XPP, seeded),
+`wbinvd` reached twice (no-op, fine).
+
+## 9. Utility-drive cache rebuilt every boot (toolkit fix)
+
+Boot 5 (second run with a populated `<save_dir>\Cache`) hung after
+`rename z:\misc.fa.cache -> z:\misc.fa` failed with `0xC0000035` (name collision). XAPI's XMountUtilityDrive
+reads the cache database in Partition0 (`@2048`), finds no owner entry for the title (the toolkit never stores
+one), and formats Partition5: `FSCTL_DISMOUNT_VOLUME` (0x90020) + a fresh FATX volume. The title therefore
+assumes an empty z: and renames with ReplaceIfExists = FALSE. The toolkit stubbed the FSCTL and never emptied the
+host directory.
+
+Fix (toolkit, `patches/xboxrecomp.patch`): `bridge_NtFsControlFile` on `FSCTL_DISMOUNT_VOLUME` for a handle on
+`Partition3..5.img` calls the new `xbox_path_format_cache()` (kernel_path.c), which empties `<save_dir>\Cache`.
+Note: the shared Cache dir is also MM3's; a format wipes it there too, which is what the console does on a
+title switch.
+
+Aside: launched from the Claude desktop app, file opens under `%LOCALAPPDATA%` are redirected to the app
+package's `LocalCache`, while the rename's resolved target shows the real path; both work.
+
+## 10. XAPI fibers (toolkit has none) -- intro-movie crash
+
+Boot 7 played `dice.bik`, `mslogo.bik`, `xsn.bik`, opened `intro.bik`, then crashed in the audio function
+`sub_00235580` reading `[0xC9D9C1DE]` with ebx = 0. A build with `/DRECOMP_ABI_CHECK` (`build_abi\`) showed
+`sub_002374F0` returning with ebx/esi/edi changed and **esp moved from 0x00F7FDDC to 0x016C8FF4**: it calls
+`0x00082E25`, which is XAPI **SwitchToFiber**. RSC2 runs work on fibers:
+
+| VA | XAPI |
+|---|---|
+| `0x00082D99` | CreateFiber(stack, start, param), ret 0xC |
+| `0x00082E64` | ConvertThreadToFiber(param), ret 4 |
+| `0x00082E25` | SwitchToFiber(fiber), ret 4 |
+| `0x00082D54` | fiber startup thunk: SEH frame, `start(param)`, ExitThread |
+
+Thread data (TLS slot `[0x415200]`) +0x90 = current fiber; fiber +0xC = saved esp. Swapping the guest esp is
+meaningless to lifted code whose control flow lives on the host stack. Fix: `sub_00082E25` override in
+`recomp_manual.c` backs each guest fiber with a host fiber (CreateFiberEx, 16 MB reserve) and saves/restores the
+guest state per fiber. Details in the comment there; `RECOMP_FIBER_TRACE=1` logs switches. Worth upstreaming as a
+generic toolkit feature: XAPI fibers are part of every XDK.
+
+With the override the loading fiber (`0x016C8FF0`, start routine `0x00238610`) starts and hands back, the intro
+movie plays through and the title then caches the soundtrack (`z:\music\*.wma`). A 300 s run had no crash.
+
+## 11. Milestone: title screen on the GPU (2026-10-28)
+
+Regen 6 (seeds from boot 8: `0x002A9700`, which failed once per frame, and thread start routines): 18,982
+functions, **3 stubs** (`0x00224AB9`, `0x002B8042`, `0xE814D1D2`; none reached in recent runs). Seeds pinned as
+`config/seed_functions.boot8.json`.
+
+D3D11 run (`RECOMP_D3D11=1`, dumps every 10 s, `frames\gpu1_sheet.png`), verified in frame dumps:
+loading screen with the warning text, DICE / Microsoft / XSN logos, the intro movie, **"PRESS START TO BEGIN"
+title screen with correct colours**, then the attract-mode movie loop. No crash in 240 s.
+
+- **Bink draws its frames as 640x480 textures (format 24)** through D3D, not through the PVIDEO overlay, so
+  MM3's overlay-stop override (MM3 #9) is not needed here. Each movie frame re-decodes the texture (expected).
+- Flips run uncapped with `RECOMP_D3D11_VSYNC=0` (thousands per second on movies); not looked at yet.
+- Not checked: audio output (no `RECOMP_AUDIO_WAV` measurement yet).
+
+## Next
+
+1. **Input.** A run with `RECOMP_PAD_PRESS=0x10` stayed on the title screen (`frames\pad1_sheet.png`): XPP is
+   swept, so the real XAPI USB stack runs against the emulated OHCI and never enumerates a pad (MM3 #13/#14).
+   Re-locate XGetDevices / XInputOpen / XInputGetState / XInputGetCapabilities / XInputSetState / XInputClose in
+   RSC2's XPP section (`0x00376860..`) and port MM3's overrides (section 4 list).
+2. Audio check with `RECOMP_AUDIO_WAV` (custom DSP images, NOTES 3).
+3. XNet "no network" handling once menus are reachable (Live / System Link screens). In RSC2's D3D no code
+uses 0x8700/0x8704 as an immediate, so 5849's overlay code is shaped differently: find it from the watchdog when
+it hangs. `0x36F64E` initialises the PVIDEO registers (0x8900..0x8930 block) and is a good starting point.

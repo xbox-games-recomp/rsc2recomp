@@ -1,0 +1,52 @@
+[
+ {
+  "start": "0x000702A1"
+ },
+ {
+  "start": "0x000A24F8"
+ },
+ {
+  "start": "0x000B00A0"
+ },
+ {
+  "start": "0x000B6010"
+ },
+ {
+  "start": "0x000BA030"
+ },
+ {
+  "start": "0x00224AB9"
+ },
+ {
+  "start": "0x002B8042"
+ },
+ {
+  "start": "0x002B8046"
+ },
+ {
+  "start": "0x002F6AF9"
+ },
+ {
+  "start": "0x00376AE4"
+ },
+ {
+  "start": "0x002383E0",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x002A9700",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x002DB000",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0034A350",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ }
+]
