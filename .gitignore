@@ -55,3 +55,4 @@ Thumbs.db
 # Test runs: repo-local save dir (RECOMP_SAVE_DIR) and live pad input file
 /savedata/
 /pad_live.txt
+/saveroot/

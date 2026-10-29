@@ -470,7 +470,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Step 4: Set game directory for file I/O path translation */
     {
         extern void xbox_path_init(const char *game_dir, const char *save_dir);
-        xbox_path_init(YOUR_GAME_DIR, NULL);
+        /* RECOMP_SAVE_ROOT: the whole save tree (partition images, z: cache, UDATA) in one folder
+         * instead of %LOCALAPPDATA%\xboxrecomp. Test runs use it to stay out of AppData, which the
+         * Claude app redirects for processes it starts (NOTES 16). */
+        const char *root = getenv("RECOMP_SAVE_ROOT");
+        xbox_path_init(YOUR_GAME_DIR, root && *root ? root : NULL);
     }
 
     /* Step 5: Initialize kernel bridge (thunk table in Xbox memory) */

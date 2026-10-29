@@ -293,14 +293,14 @@ User-confirmed for the first car (2026-10-29); cycling to the next car froze: se
 Seen on the way, not fixed (follow-ups):
 - ~~Stray glyph fragments near the bottom of the CAR screen~~: they were the stat bars missing a vtable function;
   fixed in 15.
-- Saved profiles fail to load in a later run ("Unable to load <name>"); files are read without I/O errors, so
-  probably the save signature check (XCalculateSignature / kernel keys).
+- ~~Saved profiles fail to load in a later run~~: not the signature; an empty directory-query pattern, fixed in 16.
 - Single Race -> Rally -> SS1 -> A crashes deterministically in the game's heap free (`sub_00238F10`, called from
   `0x000AA944`, freeing `[obj+0x48]` = `0x000ADF22`, a code address). Same crash site and fault address as 15,
   so probably fixed by it; not re-run.
 - Runs started from this tool are redirected by the Claude app package (`%LOCALAPPDATA%` -> package LocalCache),
   which splits the z: cache between two folders and produced rename collisions; `RECOMP_SAVE_DIR=<repo>\savedata`
-  keeps saves local (the Cache folder still goes through AppData).
+  keeps saves local (the Cache folder still goes through AppData). `RECOMP_SAVE_ROOT` (16) now moves the whole
+  tree, Cache included.
 
 ## 15. Car selection: cycling to the next car froze (seeds + game heap patch)
 
@@ -335,6 +335,35 @@ semantics the pushbuffer executor uses (`xbox_ContiguousAllocatedBytes`), so it 
 
 Verified in frame dumps (`frames\cyc13_sheet.png`): Hyundai -> Skoda -> Mitsubishi -> Ford -> back to Seat, each
 with model or lock text and stat bars; no crash and no unresolved calls. **User-confirmed (2026-10-29).**
+
+## 16. Saved profiles "Unable to load" after a restart (toolkit fix)
+
+A profile worked in the run that created it, but after a restart selecting it gave "Unable to load <name>"
+(string 0x6EF) with no file I/O at all. The profile list is built at boot by `sub_000BD820`: for each save from
+XFindFirstSaveGame (`0x83ACB`) it sets flags `+0x38` = 0x600 and calls `sub_000BD230`, which lists the save
+folder (storage object `[0x423708]` vtable +0x28) and types the save by file extension (`profile`, `replay`,
+`ghost`, `cartune`, `xsn`; strings at `0x3B57A4`...). No match -> `or 0x500` -> flags 0x700 = unusable, and the
+select screen (`sub_001D8AE0`, `0x1D8BF5`) shows the message without trying to load.
+
+The listing is `NtQueryDirectoryFile` with an **empty** file name (Length 0). `kernel_file.c` (Windows) built
+`<dir>\` + "" and `FindFirstFileW` matched nothing, so the folder looked empty. On the console, and in the
+toolkit's own POSIX version, an empty name means every entry. Fix: treat Length 0 as `*`. The creation run never
+re-lists the folder, which is why a new profile worked until the next launch. Existing saves load with the fix;
+nothing in the save files was wrong.
+
+Found by: instrumenting the four sites that load the message IDs (0x6EE/0x6EF/0x773, from
+`Locale\English\localestrings.str`: u32 count at 0x20, then {u16 id, u32 char offset} entries), then
+`RECOMP_WATCH` on the profile's flags word (`0x01020148` in these runs), then entry prints in the candidate
+functions. New knobs: `RECOMP_DIR_LOG=1` logs each directory query (pattern, status, returned name);
+`RECOMP_SAVE_ROOT=<dir>` (`src/main.c`) puts the whole save tree, z: cache included, in one folder.
+
+Aside, test environment only: with saves in `%LOCALAPPDATA%` (redirected for processes the Claude app starts) the
+second boot froze after a failed `z:\music\credits.wma.cache` rename (0xC0000035), with a second SetDisplayMode
+and no more flips (the intermittent intro freeze seen earlier was this too). With `RECOMP_SAVE_ROOT` it does not
+happen; the user's runs from `run_rsc2.bat` are not redirected.
+
+Verified in frame dumps (`frames\sav15_sheet.png`): profile created in one run, the next run lists it with its
+stats (0/2420 points, license E) and A goes to Main.
 
 ## Next
 

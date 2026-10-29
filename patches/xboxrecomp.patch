@@ -56,10 +56,35 @@ index 4a6389d..bb81eb5 100644
   * Character type of a translated host path. The Win32 file APIs take wide
   * chars; POSIX takes bytes. kernel_path.c and kernel_file.c are split on
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index 10d00f4..f8bcc42 100644
+index 10d00f4..8fa809d 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
-@@ -5252,6 +5252,23 @@ static void bridge_NtFsControlFile(void)
+@@ -5004,6 +5004,24 @@ static void bridge_NtQueryDirectoryFile(void)
+     g_eax = (uint32_t)xbox_NtQueryDirectoryFile(handle, NULL, NULL, NULL, &ios,
+                 XBOX_TO_NATIVE(info_va), length, (XBOX_FILE_INFORMATION_CLASS)info_class,
+                 pfn, (BOOLEAN)restart);
++    {
++        /* RECOMP_DIR_LOG=1: every directory query with its pattern and answer. */
++        static int on = -1;
++        if (on < 0) on = getenv("RECOMP_DIR_LOG") != NULL;
++        if (on) {
++            char pat[260] = "";
++            if (pfn && fn.Length < sizeof pat) { memcpy(pat, fn.Buffer, fn.Length); pat[fn.Length] = 0; }
++            fprintf(stderr, "  [DIR] h=%p class=%u len=%u pattern \"%s\" restart=%u -> 0x%08X",
++                    (void *)handle, info_class, length, pat, restart, g_eax);
++            if (!g_eax) {
++                uint32_t nl = BRIDGE_MEM32(info_va + 0x3C);
++                char nm[260] = "";
++                if (nl < sizeof nm) { memcpy(nm, XBOX_TO_NATIVE(info_va + 0x40), nl); nm[nl] = 0; }
++                fprintf(stderr, " \"%s\" attr=0x%X", nm, BRIDGE_MEM32(info_va + 0x38));
++            }
++            fprintf(stderr, "\n");
++        }
++    }
+     bridge_write_iostatus(ios_va, ios.Status, (uint32_t)ios.Information);
+ }
+ 
+@@ -5252,6 +5270,23 @@ static void bridge_NtFsControlFile(void)
      uint32_t fsctl = STACK_ARG(5);
      uint32_t ios_va = STACK_ARG(4);
      fprintf(stderr, "  [FILE] NtFsControlFile(0x%X) - stub\n", fsctl);
@@ -83,6 +108,23 @@ index 10d00f4..f8bcc42 100644
      bridge_write_iostatus(ios_va, 0xC00000BBu, 0);
      g_eax = 0xC00000BBu;
  }
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+index eb33a61..d759dac 100644
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -815,7 +815,11 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
+         WCHAR* clean_path = dir_path;
+         if (wcsncmp(clean_path, L"\\\\?\\", 4) == 0)
+             clean_path += 4;
+-        if (FileName && FileName->Buffer) {
++        /* An empty name means every entry, as in the POSIX version: RalliSport
++         * Challenge 2 lists a save folder that way to find user.profile, and
++         * "<dir>\" with nothing after it matches nothing, so every saved profile
++         * read as damaged after a restart. */
++        if (FileName && FileName->Buffer && FileName->Length > 0) {
+             WCHAR pattern_wide[MAX_PATH];
+             MultiByteToWideChar(CP_ACP, 0, FileName->Buffer, FileName->Length,
+                                 pattern_wide, MAX_PATH);
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
 index 2f1edbb..479db4c 100644
 --- a/src/kernel/kernel_path.c
