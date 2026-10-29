@@ -3950,7 +3950,22 @@ static uint32_t be_zpass_end(void)
         ;
     if (FAILED(hr))
         return 0;
-    n /= (UINT64)s_res * s_res;
+    /* Round up: at RES 2 a sliver of 1-3 samples would floor to 0 pixels and
+     * the title culls something that is on screen (far trees over a ridge
+     * dropping out for a few flips). RECOMP_D3D11_ZPASS_FLOOR=1 floors again;
+     * RECOMP_D3D11_ZPASS_LOG=1 prints each test that flooring would zero. */
+    {
+        static int floor_it = -1, log = -1;
+        UINT64 per = (UINT64)s_res * s_res;
+        if (floor_it < 0) {
+            floor_it = getenv("RECOMP_D3D11_ZPASS_FLOOR") && atoi(getenv("RECOMP_D3D11_ZPASS_FLOOR"));
+            log = getenv("RECOMP_D3D11_ZPASS_LOG") != NULL;
+        }
+        if (log && n && n < per)
+            fprintf(stderr, "[ZQ] flip %llu: %llu samples -> %s\n", (unsigned long long)s_flip_count,
+                    (unsigned long long)n, floor_it ? "0 pixels (floored)" : "1 pixel");
+        n = floor_it ? n / per : (n + per - 1) / per;
+    }
     return n > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)n;
 }
 

@@ -451,6 +451,9 @@ Lead from the user's own `run.log`: terrain tile textures (DXT1 128x256 .. 512x1
 each, i.e. the game streams terrain textures into reused slots while driving; a tile drawn while its slot is being
 rewritten would flicker for a few frames. Not confirmed.
 
+Third pass: two user ring saves pinned it down, and it was not the terrain. Far trees, not ground, drop out for a
+few flips, and the cause is a rounding bug in 20's visibility-test results. Fixed in 21.
+
 Flight recorder for the user's runs (`d3d11_backend.c`, on in `run_rsc2.bat`): `RECOMP_D3D11_RING=<n>` keeps the last
 n presented frames on the GPU (120 at RES 2 is ~590 MB); F12 in the game window writes them to
 `flicker\<date_time>\NNN_f<flip>.bmp` with `stats.txt` (batches, triangles, triangles per vertex programme each
@@ -491,6 +494,32 @@ GET_REPORT reads while on, and adds the result to `zpass_count`. The D3D11 back 
 
 Verified in frame dumps (`frames\wheels_pair.png`; before g9, after w4): the AI cars have wheels with rims in the
 flyby and at the start line; the sunset flyby shots show no flare with the sun behind the trees.
+
+## 21. Far trees vanish for a few frames at RES 2 (back end fix)
+
+User report (19's "terrain vanishing"), now with two F12 ring saves from `run_rsc2.bat` (RES 2):
+`flicker\20261029_143947` frames 083-086 lose the small trees behind the ridge (left of centre, just above the
+horizon), and 087 has them back. `stats.txt` shows the same thing: programme `6B1E852A` draws ~470 triangles on flips 079-082,
+~348 on 083-086 and ~480 again from 087. Nothing else changes on those flips, so the title itself skipped those
+draws. `20261029_143918` 142-149 is the same kind of event with far hills on a desert stage.
+
+Cause: RSC2 runs ~28 visibility tests every race flip (the sphere proxy `9A7BEA7C` from 20, also in a solo race,
+so world objects are tested, not only AI wheels). `be_zpass_end` scaled the D3D11 occlusion count to guest pixels
+with `n / RES^2`. At RES 2 a test that passes 1-3 samples (a sliver of a proxy peeking over a ridge) became
+**0 pixels**, so the title culled an object that was on screen. While driving these come in runs of consecutive
+flips (e.g. 14408-14411), which is the "a few frames, then back" pattern. It cannot happen at RES 1, which is
+why 19's RES 1 captures never showed it.
+
+Fix (`d3d11_backend.c`): round up, `(n + RES^2 - 1) / RES^2`, so any passing sample counts as one guest pixel.
+`RECOMP_D3D11_ZPASS_FLOOR=1` restores the old flooring. `RECOMP_D3D11_ZPASS_LOG=1` prints each test with 1 to RES^2-1
+samples (`[ZQ] flip N: k samples -> 1 pixel`).
+
+Found by: the ring's per-programme stats around the user's frames, then `RECOMP_D3D11_ZPASS_LOG` at RES 2 (z1: 11
+floored tests in ~20 s of driving on SS1), then a temporary print of the first draw after each test. In an
+old-rounding run (zb) the tree programme also dropped ~100 triangles two flips after a floored test (flip 14409).
+Not proven at the user's exact spot: scripted driving does not reach it. The fixed build (z2) logged the same
+kind of tests as `-> 1 pixel`, and its frames are unchanged otherwise. Needs the user to confirm in
+`run_rsc2.bat`.
 
 ## Next
 
