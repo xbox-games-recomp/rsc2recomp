@@ -227,7 +227,7 @@ index 2f1edbb..479db4c 100644
 +
  #endif /* _WIN32 */
 diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
-index 327f01d..4a9933e 100644
+index 327f01d..b5df7f2 100644
 --- a/src/kernel/nv2a_backend.h
 +++ b/src/kernel/nv2a_backend.h
 @@ -28,6 +28,7 @@
@@ -250,7 +250,18 @@ index 327f01d..4a9933e 100644
      uint32_t pitch;             /* bytes per row */
      uint32_t bytes_per_pixel;   /* 2 or 4 */
      uint32_t aa_sx, aa_sy;      /* 1 or 2 each */
-@@ -80,6 +86,12 @@ typedef struct {
+@@ -51,6 +57,10 @@ typedef struct {
+      * a linear texture) and the raw SET_TEXTURE_FILTER word (MIN in bits
+      * 16-23). A back end that ignores them samples level 0. */
+     uint32_t levels, filter;
++    /* Guest address of the 256-entry A8R8G8B8 CLUT (SET_TEXTURE_PALETTE) for the
++     * palettised format 0x0B, else 0. RalliSport Challenge 2 keeps its car glass
++     * mask in one; a back end that hashes texels should hash these 1 KB too. */
++    uint32_t palette;
+ } Nv2aTexture;
+ 
+ typedef struct {
+@@ -80,6 +90,12 @@ typedef struct {
       * that ignores these draws that pass over the whole surface. */
      uint32_t stencil_enable, stencil_func, stencil_ref, stencil_func_mask;
      uint32_t stencil_write_mask, stencil_fail, stencil_zfail, stencil_zpass;
@@ -263,7 +274,7 @@ index 327f01d..4a9933e 100644
  } Nv2aRenderState;
  
  typedef struct {
-@@ -89,6 +101,72 @@ typedef struct {
+@@ -89,6 +105,72 @@ typedef struct {
      const Nv2aRenderState *state;
  } Nv2aBatch;
  
@@ -336,7 +347,7 @@ index 327f01d..4a9933e 100644
  typedef struct {
      /* flags: CLEAR_SURFACE bits (Z 0x1, stencil 0x2, colour 0xF0).
       * zstencil: SET_ZSTENCIL_CLEAR_VALUE (depth in the top 24 bits for Z24S8). */
-@@ -96,17 +174,39 @@ typedef struct {
+@@ -96,17 +178,39 @@ typedef struct {
                    uint32_t flags, uint32_t argb, uint32_t zstencil);
      void (*draw)(const Nv2aSurface *s, const Nv2aBatch *b);
      void (*flip)(void);
@@ -376,7 +387,7 @@ index 327f01d..4a9933e 100644
  /* Where BACK_END_WRITE_SEMAPHORE_RELEASE (0x1D70) values land: the guest VA
   * of the semaphore the title reads GPU progress from (for XDK D3D, the
   * pointer at device+0x30). The executor writes each release there once it
-@@ -117,4 +217,8 @@ int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out);
+@@ -117,4 +221,8 @@ int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out);
   * the semaphore context DMA object through RAMIN. */
  void nv2a_pb_set_semaphore_target(uint32_t guest_va);
  
@@ -386,7 +397,7 @@ index 327f01d..4a9933e 100644
 +
  #endif /* NV2A_BACKEND_H */
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index a513bc7..5452793 100644
+index a513bc7..35cfe09 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -305,6 +305,10 @@ static struct {
@@ -479,6 +490,15 @@ index a513bc7..5452793 100644
  }
  
  static int sample_texture(uint32_t u, uint32_t v, uint32_t *argb);
+@@ -844,7 +880,7 @@ int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out)
+     s_gpu.texs[0].color  = tex->color;
+     s_gpu.texs[0].addr_u = 3;
+     s_gpu.texs[0].addr_v = 3;
+-    s_gpu.texs[0].palette = 0;          /* ponytail: no palettised formats */
++    s_gpu.texs[0].palette = tex->palette;
+     s_gpu.texs[0].levels = 1;
+     s_gpu.texs[0].filter = 0;
+     s_gpu.texs[0].cube   = 0;
 @@ -1135,6 +1171,7 @@ static uint32_t linear_twin(uint32_t fmt)
      case 0x06: return 0x12;                /* A8R8G8B8  -> LIN_A8R8G8B8  */
      case 0x07: return 0x1E;                /* X8R8G8B8  -> LIN_X8R8G8B8  */
@@ -575,8 +595,11 @@ index a513bc7..5452793 100644
      batch.texture = NULL;
      batch.state = &rs;
      if (textured && s_gpu.texs[0].valid) {
-@@ -2053,8 +2119,48 @@ static void backend_flush(int textured)
+@@ -2051,10 +2117,52 @@ static void backend_flush(int textured)
+         tex.addr_v = s_gpu.texs[0].addr_v;
+         tex.levels = s_gpu.texs[0].pitch ? 1 : s_gpu.texs[0].levels;
          tex.filter = s_gpu.texs[0].filter;
++        tex.palette = s_gpu.texs[0].palette;
          batch.texture = &tex;
      }
 -    s_backend->draw(&surf, &batch);
@@ -617,6 +640,7 @@ index a513bc7..5452793 100644
 +            si->tex.addr_v = t->addr_v;
 +            si->tex.levels = t->pitch ? 1 : t->levels;
 +            si->tex.filter = t->filter;
++            si->tex.palette = t->palette;
 +        }
 +        s_backend->draw_ext(&surf, &batch, &x);
 +    } else if (!vsh) {
@@ -626,7 +650,7 @@ index a513bc7..5452793 100644
      s_bcount = 0;
      note_drawn();
  }
-@@ -2097,6 +2203,25 @@ static void raster_indexed(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb)
+@@ -2097,6 +2205,25 @@ static void raster_indexed(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb)
              o[k].diffuse = vertex_color(ix[k]);
              o[k].u = textured ? uv[k][0] : 0.0f;
              o[k].v = textured ? uv[k][1] : 0.0f;
@@ -652,7 +676,7 @@ index a513bc7..5452793 100644
          }
          s_bcount += 3;
          return;
-@@ -2208,7 +2333,7 @@ static uint32_t tex_texel_bytes(uint32_t fmt)
+@@ -2208,7 +2335,7 @@ static uint32_t tex_texel_bytes(uint32_t fmt)
      case 0x00: case 0x01: case 0x0B: case 0x13: case 0x19: case 0x1F:
          return 1;
      case 0x02: case 0x03: case 0x04: case 0x05: case 0x10: case 0x11:
@@ -661,7 +685,7 @@ index a513bc7..5452793 100644
          return 2;
      default:
          return 4;
-@@ -2233,6 +2358,23 @@ static uint32_t tex_face_stride(const Texture *t)
+@@ -2233,6 +2360,23 @@ static uint32_t tex_face_stride(const Texture *t)
      return (total + 127u) & ~127u;
  }
  
@@ -685,7 +709,7 @@ index a513bc7..5452793 100644
  /* One texel at normalised (swizzled/DXT) or texel (linear) coordinates, as
   * floats. An unusable stage reads white, so a missing texture multiplies
   * through instead of blacking the pixel out. */
-@@ -2682,9 +2824,10 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2682,9 +2826,10 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      if (backend_draws()) {                     /* a back end rasterises */
          Nv2aVertex *o = backend_slot();
          if (o) {
@@ -699,7 +723,7 @@ index a513bc7..5452793 100644
              s_bcount += 3;
          }
          return;
-@@ -2927,15 +3070,445 @@ static void xf_set_viewport(void)
+@@ -2927,15 +3072,445 @@ static void xf_set_viewport(void)
      s_xf_o[2] = of[2];
  }
  
@@ -1145,7 +1169,7 @@ index a513bc7..5452793 100644
      xf_set_viewport();
      {
          const VertexAttr *tc = texcoord_attr();
-@@ -2993,11 +3566,32 @@ static void raster_batch_program(void)
+@@ -2993,11 +3568,32 @@ static void raster_batch_program(void)
          }
          /* Spread out: one every 20000 program batches, so a run that spends
           * its first half in menus still traces the 3D scene. */
@@ -1181,7 +1205,7 @@ index a513bc7..5452793 100644
              for (i = 0; i < NV_VERTEX_ATTRS; i++) {
                  const VertexAttr *at = &s_gpu.attr[i];
                  if (!at->size)
-@@ -3008,13 +3602,85 @@ static void raster_batch_program(void)
+@@ -3008,13 +3604,85 @@ static void raster_batch_program(void)
                          at->size, at->stride, in[0], in[1], in[2], in[3]);
              }
              {
@@ -1269,7 +1293,7 @@ index a513bc7..5452793 100644
              for (i = 0; i < 3; i++)
                  fprintf(stderr, "[VTRACE]   out%u pos %g %g %g %g\n", i,
                          s_xf[i].pos[0], s_xf[i].pos[1], s_xf[i].pos[2],
-@@ -3040,8 +3706,14 @@ static void raster_batch_program(void)
+@@ -3040,8 +3708,14 @@ static void raster_batch_program(void)
              raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
          break;
      case NV_PRIM_TRIANGLE_STRIP:
@@ -1286,7 +1310,7 @@ index a513bc7..5452793 100644
          break;
      case NV_PRIM_TRIANGLE_FAN:
      case NV_PRIM_POLYGON:
-@@ -3065,8 +3737,10 @@ static void raster_batch_program(void)
+@@ -3065,8 +3739,10 @@ static void raster_batch_program(void)
      }
      /* The batch's triangles, all at once (see xf_queue_push). */
      xf_queue_flush();
@@ -1297,7 +1321,7 @@ index a513bc7..5452793 100644
  }
  
  static void raster_batch(void)
-@@ -3108,9 +3782,14 @@ static void raster_batch(void)
+@@ -3108,9 +3784,14 @@ static void raster_batch(void)
                             vertex_color(s_gpu.idx[i]));
          break;
      case NV_PRIM_TRIANGLE_STRIP:
@@ -1315,7 +1339,7 @@ index a513bc7..5452793 100644
          break;
      case NV_PRIM_TRIANGLE_FAN:
      case NV_PRIM_POLYGON:
-@@ -3212,8 +3891,14 @@ static void draw_primitive(void)
+@@ -3212,8 +3893,14 @@ static void draw_primitive(void)
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
      s_gpu.draws++;
@@ -1332,7 +1356,7 @@ index a513bc7..5452793 100644
      s_gpu.verts += s_gpu.idx_count;
  
      /* How many batches carry coordinates at all, and what range they span.
-@@ -3402,6 +4087,9 @@ static void draw_inline_array(void)
+@@ -3402,6 +4089,9 @@ static void draw_inline_array(void)
          case 0:  bytes = 4;                        break;  /* D3DCOLOR   */
          case 2:  bytes = 4 * s_gpu.attr[a].size;   break;  /* float      */
          case 4:  bytes = s_gpu.attr[a].size;       break;  /* ubyte norm */
@@ -1342,7 +1366,7 @@ index a513bc7..5452793 100644
          default: bytes = 4 * s_gpu.attr[a].size;   break;
          }
          s_gpu.attr[a].offset = off;
-@@ -3912,9 +4600,12 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3912,9 +4602,12 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          s_gpu.rc_seen = 1;
          break;
      case 0x1E70: s_gpu.rc.stage_program = param; break;
@@ -1355,7 +1379,7 @@ index a513bc7..5452793 100644
      case 0x0300: s_gpu.alpha_test = param; break;
      case 0x033C: s_gpu.alpha_func = param; break;
      case 0x0340: s_gpu.alpha_ref = param; break;
-@@ -4130,6 +4821,8 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -4130,6 +4823,8 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              }
          }
          s_gpu.drawn_stale = 1;

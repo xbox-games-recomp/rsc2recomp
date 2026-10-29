@@ -294,6 +294,14 @@ static const char s_hlsl[] =
 "    if (m == 6u) return float4(sample_stage(3u, i.t3.xy / (i.t3.w != 0.0 ? i.t3.w : 1.0)).rgb, 1);\n"
 "    if (m == 7u) return float4(i.d0.aaa, 1);\n"
 "    if (m == 8u) { uint h = dbg.y * 2654435761u; return float4(((h >> 8) & 255u) / 255.0, ((h >> 16) & 255u) / 255.0, ((h >> 24) & 255u) / 255.0, 1); }\n"
+"    if (m == 9u) return float4(i.d1.aaa, 1);\n"
+"    if (m >= 10u && m <= 17u) {\n"
+"      float4 tc[4] = { i.t0, i.t1, i.t2, i.t3 }, T[4];\n"
+"      fetch_all(tc, T);\n"
+"      float4 t = T[(m - 10u) & 3u];\n"
+"      return m < 14u ? float4(t.rgb, 1) : float4(t.aaa, 1);\n"
+"    }\n"
+"    if (m == 18u) return float4(saturate(i.t2.xyz * 0.5 + 0.5), 1);\n"
 "  }\n"
 "  if (dbg.z != 0u) i.d1 = float4(0, 0, 0, 1);\n"
 "  if (flags & 1u) {\n"
@@ -1191,6 +1199,8 @@ static ID3D11ShaderResourceView *get_texture(const Nv2aTexture *t)
         }
     }
     hash = guest_hash(t->offset, bytes);
+    if (t->color == 0x0B && t->palette)          /* P8: a new CLUT is a new texture */
+        hash = hash * 16777619u ^ guest_hash(t->palette, 1024);
     for (i = 0; i < s_tex_n; i++) {
         TexEntry *c = &s_tex[i];
         if (c->offset == t->offset && c->w == t->width && c->h == t->height
@@ -1340,6 +1350,32 @@ static ID3D11ShaderResourceView *get_cube_texture(const Nv2aTexture *t)
         sr[f].pSysMem = face;
         sr[f].SysMemPitch = t->width * 4;
         sr[f].SysMemSlicePitch = 0;
+    }
+    {
+        /* With RECOMP_D3D11_TEXDUMP=<dir>: the six faces stacked (+X -X +Y -Y +Z -Z, top down) as
+         * <dir>\cube_<offset>_<w>.bmp, once each. */
+        static const char *dir = (const char *)1;
+        static uint32_t done[64];
+        static int ndone;
+        int k;
+        if (dir == (const char *)1) dir = getenv("RECOMP_D3D11_TEXDUMP");
+        for (k = 0; dir && k < ndone && done[k] != t->offset; k++) ;
+        if (dir && k == ndone && ndone < 64) {
+            char path[512];
+            FILE *fp;
+            uint8_t bh[54] = { 'B', 'M' };
+            int32_t w = (int32_t)t->width, h = -(int32_t)(t->width * 6);
+            uint32_t sz = 54 + t->width * t->width * 24;
+            done[ndone++] = t->offset;
+            snprintf(path, sizeof path, "%s\\cube_%08X_%u.bmp", dir, t->offset, t->width);
+            if ((fp = fopen(path, "wb")) != NULL) {
+                memcpy(bh + 2, &sz, 4); bh[10] = 54; bh[14] = 40;
+                memcpy(bh + 18, &w, 4); memcpy(bh + 22, &h, 4); bh[26] = 1; bh[28] = 32;
+                fwrite(bh, 1, 54, fp);
+                fwrite(argb, 4, (size_t)t->width * t->width * 6, fp);
+                fclose(fp);
+            }
+        }
     }
     memset(&td, 0, sizeof td);
     td.Width = td.Height = t->width;
@@ -1576,6 +1612,7 @@ static void set_viewport(uint32_t w, uint32_t h)
 
 /* RECOMP_D3D11_LOGFILE: the flip to log once the trigger file appears (see be_draw_ext).
  * Polled at most once per flip. */
+static long s_logstep_a = -1, s_logstep_b = -1;
 static int logfile_flip(void)
 {
     static const char *path = (const char *)1;
@@ -1585,6 +1622,12 @@ static int logfile_flip(void)
     if (polled != s_flip_count) {
         polled = s_flip_count;
         if (armed == (uint64_t)-1 && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+            FILE *f = fopen(path, "r");      /* optional "<from>-<to>": the RECOMP_D3D11_LOGSTEP batch range */
+            if (f) {
+                long a, b;
+                if (fscanf(f, "%ld-%ld", &a, &b) == 2) { s_logstep_a = a; s_logstep_b = b; }
+                fclose(f);
+            }
             DeleteFileA(path);
             armed = s_flip_count + 1;   /* the next flip from its start */
             fprintf(stderr, "[D3D11] LOGFILE: logging flip %llu\n", (unsigned long long)armed);
@@ -2690,6 +2733,22 @@ vertices_ready:
         static int dbg = -1;
         if (dbg < 0) { const char *e = getenv("RECOMP_D3D11_DBG"); dbg = e ? atoi(e) : 0; }
         cb.dbg[0] = (uint32_t)dbg;
+        {
+            /* RECOMP_D3D11_DBGFILE=<path>: "<mode> [<vsh hash hex>]" read every 30 flips; the debug view
+             * (modes as RECOMP_D3D11_DBG: 1 d0, 3 d1, 7 d0.a, 9 d1.a, 10-13 stage rgb, 14-17 stage alpha,
+             * 18 t2 direction) for that vertex programme's draws only, or all with no hash. */
+            static const char *path = (const char *)1;
+            static uint64_t read_at;
+            static uint32_t fmode, fhash;
+            if (path == (const char *)1) path = getenv("RECOMP_D3D11_DBGFILE");
+            if (path && s_flip_count >= read_at) {
+                FILE *f = fopen(path, "r");
+                read_at = s_flip_count + 30;
+                fmode = fhash = 0;
+                if (f) { if (fscanf(f, "%u %x", &fmode, &fhash) < 1) fmode = 0; fclose(f); }
+            }
+            if (fmode && (!fhash || fhash == x->vsh_hash)) cb.dbg[0] = fmode;
+        }
         cb.dbg[1] = x->vsh_hash;
         {
             /* The title toggles SET_SPECULAR_ENABLE per draw; off, the combiners see no specular.
@@ -3108,6 +3167,27 @@ grade_drawn:;
                     size_t n = (size_t)(c - e) < sizeof sp - 1 ? (size_t)(c - e) : sizeof sp - 1;
                     memcpy(sp, e, n); sp[n] = 0;
                     while (c && nsb < 8) { sb[nsb++] = atol(c + 1); c = strchr(c + 1, ','); }
+                }
+            }
+            {
+                /* RECOMP_D3D11_LOGSTEP=<prefix>,<from>-<to>: in the RECOMP_D3D11_LOGFILE flip, the
+                 * surface after each of those batches: <prefix><flip>_b<b>.bmp. A "<from>-<to>" written
+                 * into the trigger file replaces the range. */
+                static char lp[400]; static long la = -2, lb;
+                if (la == -2) {
+                    const char *e = getenv("RECOMP_D3D11_LOGSTEP"), *c;
+                    la = -1;
+                    if (e && (c = strchr(e, ',')) != NULL && (size_t)(c - e) < sizeof lp) {
+                        memcpy(lp, e, (size_t)(c - e)); lp[c - e] = 0;
+                        if (sscanf(c + 1, "%ld-%ld", &la, &lb) != 2) la = -1;
+                    }
+                }
+                if (s_logstep_a >= 0) { la = s_logstep_a; lb = s_logstep_b; }
+                if (la >= 0 && (long)(s_draws_this_flip - 1) >= la && (long)(s_draws_this_flip - 1) <= lb && logfile_flip()) {
+                    char p[460];
+                    snprintf(p, sizeof p, "%s%llu_b%04ld.bmp", lp, (unsigned long long)s_flip_count + 1, (long)(s_draws_this_flip - 1));
+                    g_dump_alpha = 0;
+                    write_rt_bmp(r, p);
                 }
             }
             if (nsb && s_dumpwin) {
@@ -3864,6 +3944,20 @@ static void be_flip(void)
             fprintf(stderr, "[FSTAT] %llu b %llu t %llu d %llu rt %08X c %u %08X\n", (unsigned long long)s_flip_count,
                     (unsigned long long)s_draws_this_flip, (unsigned long long)(s_tri_count - tris0),
                     (unsigned long long)(s_batches_dropped - drop0), r ? r->va : 0, s_clears_this_flip, s_clear_sig);
+        {
+            /* RECOMP_D3D11_DROPDUMP=<pct>: also write the frame (with RECOMP_D3D11_DUMP's prefix) when its
+             * triangle count falls under pct% of the previous flip's -- one-frame vanishing scenery. */
+            static int pct = -1;
+            static uint64_t prev_t;
+            uint64_t t = s_tri_count - tris0;
+            if (pct < 0) { const char *e = getenv("RECOMP_D3D11_DROPDUMP"); pct = e ? atoi(e) : 0; }
+            if (pct && r && r->tex && prev_t > 5000 && t * 100 < prev_t * (uint64_t)pct) {
+                fprintf(stderr, "[DROP] flip %llu tris %llu after %llu, batches %llu\n", (unsigned long long)s_flip_count,
+                        (unsigned long long)t, (unsigned long long)prev_t, (unsigned long long)s_draws_this_flip);
+                dump_rt(r, 1);
+            }
+            prev_t = t;
+        }
         s_clears_this_flip = 0;
         s_clear_sig = 0;
         tris0 = s_tri_count;

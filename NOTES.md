@@ -386,6 +386,41 @@ arrows, progress bar, race time). The car's rear window draws flat black; it may
 against the console. Verified in frame dumps (`frames\r1_sheet.png`, `r1_sheet2.png`, `r1_full79.png`,
 `s1_pair.png`); still needs the user to drive in `run_rsc2.bat`.
 
+## 18. Car glass drawn opaque black (toolkit + back end fix)
+
+User report after driving: graphics glitches in the race. The rear window (and every car's glass) drew as an
+opaque dark grey-blue sheet with no interior or reflection (17 noted it).
+
+The glass draw (vsh `805E31E7`, 8 combiner stages, SRC_ALPHA blend) samples four textures: t0 a 512x512
+**palettised** mask (format `0x0B`, SZ_I8_A8R8G8B8), t1 the DXT1 logo strip, t2 the stage's sky cube map, t3 a
+64x64 render target. Decoded (`scratchpad rcdec.py`-style, see the batch log), its alpha is
+`v1.a + 2 * t0.a - 1`, with `t0.a = t0.r >= 0.5 ? t0.r : 0.5`; the reflection weight is `lerp(1, v1.a, t1.a)`.
+`Nv2aTexture` (the executor -> back end texture) had no palette field and `nv2a_backend_decode_texture` forced
+`palette = 0`, so every P8 texture failed to decode (`texture format 0x0B (512x512) not decodable` x8 in the log),
+the stage went invalid and the shader read white: t0.a = 1, alpha 1, opaque glass with no cube term.
+
+Fix: `Nv2aTexture.palette` (toolkit `nv2a_backend.h`), filled from the stage's SET_TEXTURE_PALETTE in both
+places the executor builds one, and used by the decoder; the back end folds the 1 KB CLUT into the texture's
+cache hash (a new palette is a new texture). Now the glass is translucent with the sky reflection, and the
+roll cage shows through. No more undecodable textures in a race.
+
+New debug knobs (`d3d11_backend.c`), all used to find this:
+- `RECOMP_D3D11_DBGFILE=<file>`: `<mode> [<vsh hash>]`, re-read every 30 flips, so the debug view switches
+  while the game runs and only for one vertex programme. Modes: 1 d0, 3 d1, 7 d0.a, 9 d1.a, 10-13 stage
+  0-3 colour after the fetch, 14-17 their alpha, 18 t2 as a direction.
+- `RECOMP_D3D11_LOGSTEP=<prefix>,<a>-<b>`: in the `RECOMP_D3D11_LOGFILE` flip, the surface after each batch
+  a..b; writing `a-b` into the trigger file replaces the range. VSH-on-GPU batches have no CPU vertices, so
+  PICK cannot find them; the filmstrip can.
+- `RECOMP_D3D11_DROPDUMP=<pct>`: dump a frame whose triangle count falls under pct% of the last one (for
+  one-frame vanishing scenery; logs `[DROP]`).
+- With `RECOMP_D3D11_TEXDUMP`, cube maps are written too (`cube_<va>_<w>.bmp`, six faces stacked).
+
+Also learnt: the stage's sky cube (`80C0F100`, DXT5 128) decodes right (+Y sky, -Y ground). The four 64x64
+targets `80821000 + n*0x4000` are top-down terrain colour renders each frame, sampled as t3 by car and terrain.
+
+Verified in frame dumps (`frames\glass_pair.png`, before g2 / after g6): the player's rear window shows the
+roll cage and the sky tint; the AI cars' windows look like glass.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
