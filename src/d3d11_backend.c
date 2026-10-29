@@ -1815,6 +1815,32 @@ static void log_batch(uint64_t idx, const Nv2aSurface *s, const Nv2aBatch *b, co
         uint32_t i, k;
         fprintf(stderr, "    vsh on GPU: %u verts x %u attrs, %u indices\n", vb->nverts, vb->stride, vb->nindices);
         /* input -> slot map, and the first vertices' attributes (texcoords, colours) */
+        {
+            /* RECOMP_D3D11_LOGCONST=<a>-<b>: also the programme's constants c[a..b]. */
+            static int ca = -2, cb2;
+            if (ca == -2) { const char *e = getenv("RECOMP_D3D11_LOGCONST"); ca = -1; if (e) sscanf(e, "%d-%d", &ca, &cb2); }
+            for (i = (uint32_t)(ca < 0 ? 1 : ca); ca >= 0 && (int)i <= cb2 && i < 192; i++)
+                fprintf(stderr, "    c[%u] = %g %g %g %g\n", i, vb->constants[i][0], vb->constants[i][1],
+                        vb->constants[i][2], vb->constants[i][3]);
+        }
+        {
+            /* per slot: non-finite components and the largest magnitude */
+            uint32_t s2, bad, nb = 0;
+            fprintf(stderr, "    attr range:");
+            for (s2 = 0; s2 < vb->stride; s2++) {
+                float mx = 0;
+                bad = 0;
+                for (i = 0; i < vb->nverts; i++)
+                    for (k = 0; k < 4; k++) {
+                        float f = vb->attrs[i * vb->stride + s2][k];
+                        if (!(f == f) || fabsf(f) > 3e38f) bad++;
+                        else if (fabsf(f) > mx) mx = fabsf(f);
+                    }
+                nb += bad;
+                fprintf(stderr, " s%u max %g bad %u;", s2, mx, bad);
+            }
+            fprintf(stderr, "%s\n", nb ? " NONFINITE" : "");
+        }
         fprintf(stderr, "    slots:");
         for (i = 0; i < 16; i++)
             if (vb->slot[i] != 0xFF)
@@ -3341,6 +3367,13 @@ static void dump_rt(const RT *r, int force)
         }
         s_dumpwin = prefix && !force && now - t0 >= from_ms && !(for_ms && now - t0 > from_ms + for_ms);
         s_bh_on = bh && s_dumpwin;
+    }
+    {
+        /* RECOMP_D3D11_BURSTFILE=<path>: while that file exists, dump every flip. */
+        static const char *burst = (const char *)1;
+        if (burst == (const char *)1) burst = getenv("RECOMP_D3D11_BURSTFILE");
+        if (burst && !force && prefix && GetFileAttributesA(burst) != INVALID_FILE_ATTRIBUTES)
+            next_ms = 0;
     }
     if (!prefix || (!force && now < next_ms))
         return;

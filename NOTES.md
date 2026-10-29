@@ -421,6 +421,48 @@ targets `80821000 + n*0x4000` are top-down terrain colour renders each frame, sa
 Verified in frame dumps (`frames\glass_pair.png`, before g2 / after g6): the player's rear window shows the
 roll cage and the sky tint; the AI cars' windows look like glass.
 
+## 19. Race glitches still open (investigated, not fixed)
+
+Found or reported in the same pass as 18; each is written up with what is known.
+
+**AI cars without wheels (seen in every race run).** In the race the AI cars' wheel arches are empty and show the
+ground (`frames\wheels.png`: red Mitsubishi, yellow Skoda); the player's rear wheels do draw. In the pre-race
+flyby the same cars have wheels (`frames\intro_wheels.png`), so they go between the flyby and the countdown.
+Known so far:
+- Not the HLSL vertex path: same with `RECOMP_D3D11_VSH_CPU=1`. No `[ICALL]` failures, no dropped batches.
+- In the flyby the tyre pixel is written last by vsh `EE32BE07` (one 172-triangle batch per car, the car's own
+  `c[15..18]`); position = `v0 + v7 * c[45 + a0].x`, a0 = `floor(v6.w * c[10].w + 0.25)` with c[10].w = 256.
+  In the race the same four batches are submitted with identical vertex data and state, c[45..48].x = 0, yet
+  three of them change no pixel at all (LOGSTEP filmstrip, `frames\step15`).
+- With `RECOMP_D3D11_NOCULL=1` a giant tyre tread appears at the bottom of the screen for some frames
+  (`frames\g22_f3.png`): some wheel geometry is drawn with a transform that puts it at the camera, inside out.
+  Which batch that is was not pinned down (the countdown frame logged in g23 did not show it).
+- The car-shadow quads (vsh `20DD05E9`, inline `DrawPrimitiveUP` data, so written by the game's CPU code) carry
+  `-inf/inf` texture coordinates for two of the four cars (`attr range ... NONFINITE` in the batch log). Bad
+  per-wheel / contact maths in the recompiled game code would explain both, but it is not proven.
+Next step: find the game function that fills the shadow quad (watch the pushbuffer inline data or the source array
+it copies) and the one that writes the wheel draw's matrix; compare against x87 semantics (FSINCOS order, FPREM,
+FPATAN, denormals - `c[47].w`/`c[48]` hold denormal junk).
+
+**Terrain vanishing for 10-20 frames (user report).** Not reproduced in ~10 race runs. Ruled out: dropped batches
+(FRAMESTATS `d` always 0), a sudden triangle-count drop (`RECOMP_D3D11_DROPDUMP=50`: only the loading screen fired),
+the async vertex-shader compile window (the CPU fallback draws terrain correctly), visibility queries
+(`GET_REPORT` is only used with zpass counting off, as timestamps), the vertex/index ring wraps (DISCARD on wrap is
+correct) and the double-buffer present order (strictly alternating). A 200-frame every-flip burst while driving
+(`RECOMP_D3D11_BURSTFILE`) showed no vanishing frame. Next: a screenshot or the stage/position from the user, then
+a burst there.
+
+**Black band along a road edge.** Seen once (g1, `frames\g1_crop.png`): a uniform near-black strip ~25 px wide
+between the road and the grass verge near the first house. Not seen again from other angles; may be a verge
+polygon the game shades dark. Not investigated further.
+
+**Performance.** The race runs at about 25-30 flips/s with dumps on (the menus run at 145 with vsync), so race
+time advances faster than the dumps suggest. Not a rendering bug; noted for the user's report.
+
+New debug knobs (`d3d11_backend.c`): `RECOMP_D3D11_BURSTFILE=<path>` dumps every flip while that file exists;
+`RECOMP_D3D11_LOGCONST=<a>-<b>` adds a vertex programme's constants to the batch log; the batch log now also gives
+each attribute slot's largest magnitude and non-finite count (`attr range`, tagged `NONFINITE`).
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
