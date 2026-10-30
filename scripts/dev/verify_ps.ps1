@@ -1,9 +1,9 @@
 # Race run that dumps presented frames and logs one frame's batches (combiner state per draw).
 # usage: verify_ps.ps1 <tag> [logframe range] [secs]
 param([string]$tag = "xg", [string]$logframe = "6300-6300", [int]$until = 215000, [int]$resumeAt = 260, [int]$secs = 400, [int]$dumpms = 10000)
-Set-Location $PSScriptRoot
+$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent; Set-Location $root
 Get-Process rsc2_recomp -ErrorAction SilentlyContinue | Stop-Process -Force
-$live = Join-Path $PSScriptRoot "pad_live.txt"
+$live = Join-Path $root "pad_live.txt"
 "" | Out-File $live -Encoding ascii
 New-Item -ItemType Directory -Force "frames\$tag" | Out-Null
 Remove-Item "frames\$tag\*.bmp" -ErrorAction SilentlyContinue

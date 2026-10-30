@@ -1,7 +1,7 @@
 # to_carselect.ps1 <tag>: fresh save dir, boot, create a profile, Career -> Amateur -> first event
 # (the car selection screen). Leaves the game running; frames in frames\<tag>, log in <tag>.err.
 param([string]$tag, [string]$extraEnv = "")
-$repo = "D:\Documents\Xbox Recompilation\rsc2recomp"
+$repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $press = "$PSScriptRoot\press.ps1"
 Set-Location $repo
 Get-Process rsc2_recomp -ErrorAction SilentlyContinue | Stop-Process -Force

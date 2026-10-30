@@ -264,8 +264,8 @@ User report: on the car selection screen the 3D car was drawn on a black backgro
 
 **Route** (headless, `RECOMP_PAD_LIVE` file, fresh save dir): Start x8 through the movies (lands on the profile
 name keyboard when no profile exists), down x4 + right x4 + A (Done), A (select the profile), A (CAREER), left + A
-(AMATEUR), A (first event, Novice Rally Invitational) -> CAR screen. Scripted: `scripts\to_carselect.ps1 <tag>
-["ENV=v;ENV2=v"]` (leaves the game running; `scripts\press.ps1 <tag> <buttons...>` presses more and saves the
+(AMATEUR), A (first event, Novice Rally Invitational) -> CAR screen. Scripted: `scripts\dev\to_carselect.ps1 <tag>
+["ENV=v;ENV2=v"]` (leaves the game running; `scripts\dev\press.ps1 <tag> <buttons...>` presses more and saves the
 newest frame as `frames\<tag>_now.png`). The frame log trigger is new: `RECOMP_D3D11_LOGFILE=<path>`
 logs the next whole flip when that file appears (no flip number needed); during that flip a draw that samples a
 render target also prints the target's colour/alpha pixel counts and dumps the drawn-to surface right after it.
