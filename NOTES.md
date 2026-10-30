@@ -777,6 +777,30 @@ Bench (Pro SS1 start line + short drive, RES 2, vsync off; the bench now clears 
 4x: 12.2 ms a frame, ~5700 keys held, 44 MB. Vsync-on numbers from the scripted runs are not usable (their window
 is hidden; presenting there is throttled to ~25 fps whatever the frame time). Needs the user's check in the
 launcher with vsync on.
+User check: 4x holds 60 fps or more with vsync on, in the launcher.
+
+## 29. Trees at 4x dropped again: models kept 2x further by default (recomp_manual.c)
+
+With 28 in, the user saw the dark band of trees at the end of the road (Pro SS1, near the start) vanish again at 4x,
+driving forward (`flicker/20261030_022327`, frames 116-219: foliage vertex program 6B1E852A 762 -> 634 triangles).
+Not the geometry cache (`RECOMP_VSH_GEOM_CACHE=0` drops too) and not 27 (`RECOMP_D3D11_TEXCHECK=draw` drops too).
+
+Probed run (bumper camera, the user's spot): every drop caught was one tree model (~124 foliage triangles) switching
+to its card in `sub_0010F0D0` (fade 1.0, size ~0.150, card alpha byte 255; e.g. objects 013EC650 and 013EF670), with
+no cull removing the tree. The card that replaces it does not show. 26's longer distance fade only hid this by
+luck. Why those cards are empty is still open; the per-model LOD flags (+0x2B8/+0x2C0) are 0 for all types, so it
+is not a LOD pick.
+
+Fix: `recomp_tree_model_scale()` now defaults to the square root of RECOMP_TREE_DETAIL (models 2x further at 4x,
+1.41x at 2x, console at 1x); `RECOMP_TREE_MODEL=<n>` still overrides. Cost at 4x (bench as in 28, vsync off):
+
+| model distance | 4x flips/s | draws |
+|---|---|---|
+| console | 76 / 82 | 1219 |
+| 2x (new default) | 67 / 73 | 1348 |
+| 4x (25) | 52 / 55 | 1797 |
+
+User check with `RECOMP_TREE_MODEL=2`: the trees stay and it holds 60 fps or more.
 
 ## Next
 

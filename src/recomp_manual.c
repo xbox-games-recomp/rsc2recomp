@@ -937,6 +937,7 @@ void recomp_icall_not_code_log(uint32_t va)
  * RECOMP_UNIMPL_TRAP=1 aborts at the first hit, at the guest address of the
  * cause rather than wherever the damage surfaces. */
 #include <stdlib.h>
+#include <math.h>   /* sqrtf */
 
 void recomp_unimpl(const char *text, uint32_t va)
 {
@@ -973,16 +974,17 @@ float recomp_tree_lod_scale(void)
     return scale;
 }
 
-/* The switch from a tree's model to its flat card (NOTES 25, 26):
- * RECOMP_TREE_MODEL=<n> keeps models n times further. Default 1 (the console):
- * models cost ~28 us of CPU each, and the distance fade below fixes the drop. */
+/* The switch from a tree's model to its flat card (NOTES 25, 26, 29):
+ * RECOMP_TREE_MODEL=<n> keeps models n times further. Default the square root
+ * of RECOMP_TREE_DETAIL (2 at 4x): some distant cards show nothing where their
+ * model was, and models cost ~28 us of CPU each, so 4x models miss 60 fps. */
 float recomp_tree_model_scale(void)
 {
     static float scale = -1.0f;
     if (scale < 0.0f) {
         const char *e = getenv("RECOMP_TREE_MODEL");
-        float d = e ? (float)atof(e) : 1.0f;
-        scale = d > 0.0f ? 1.0f / d : 1.0f;
+        float d = e ? (float)atof(e) : 0.0f;
+        scale = d > 0.0f ? 1.0f / d : sqrtf(recomp_tree_lod_scale());
     }
     return scale;
 }
