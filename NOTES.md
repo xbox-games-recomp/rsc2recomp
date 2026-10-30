@@ -1,6 +1,6 @@
 # RalliSport Challenge 2 static recompilation -- engineering notes
 
-Scaffolded 2026-10-28 from [mm3recomp](https://github.com/taxidriverhk/mm3recomp) (Midtown Madness 3; same
+Scaffolded 2026-10-28 from [mm3recomp](https://github.com/xbox-games-recomp/mm3recomp) (Midtown Madness 3; same
 studio, DICE). Items are numbered like mm3recomp's NOTES.md ("MM3 #n" refers to that file).
 
 Layout: toolkit = submodule `xboxrecomp\` pinned to v0.15.0 (6376eb8) with mm3recomp's
