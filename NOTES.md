@@ -627,6 +627,28 @@ about 40% at 530. Same code and data as the console, so the console shows the sa
 about 2060 units deep (logged), 58.7 flips/s on the scripted drive; the countdown frame shows the tree line along
 the road running on to the vanishing point (`frames\sn` vs `frames\f4`, f00051). Launcher help text updated.
 
+## 24. Window took ~20 s to open: XNet's DHCP wait (patch_gen fix)
+
+User report: from the launcher, the game window appeared only ~20 s after Run. Timed headless (launch to
+`MainWindowHandle`): 24.6 s. The D3D device came up at 20.5 s; before it, the log showed only a polling loop.
+A temporary print in XAPI `SleepEx` (`sub_00074ED1`) found 202 `Sleep(100)` calls, all from `0x207542`:
+
+- `sub_002074E0` (network init) calls `XNetStartup` (`sub_00310058`), `WSAStartup(0x101)` (`sub_0031006F`), then
+  loops `Sleep(100)` until the check `sub_002071F0` (vtable `0x39F6FC` slot 3) is true.
+- `sub_002071F0` calls `XNetGetTitleXnAddr` (`sub_0030FD2A`) into a local `XNADDR` and is true when the status,
+  minus `GATEWAY` (0x20), is non-zero, i.e. once it is no longer `XNET_GET_XNADDR_PENDING` (0).
+- With no NIC, XNet's DHCP keeps it pending until it gives up at ~21 s and answers `0x8002` (ETHERNET |
+  TROUBLESHOOT), logged.
+
+Fix (`patch_gen.py`): in `sub_002071F0` a pending status reads as `0x8002`, the answer XNet gives 20 s later. The
+`XNADDR` is a local nobody reads, and XNet itself is untouched (its DHCP still times out in the background).
+Window now at 4.3 s cold, 1.2 s warm. The scripted Career -> SS1 drive still races. Its flips/s were not
+comparable between runs: 45.9 with the fix, 30.1 without it, back to back. The drives diverged, so those numbers
+say nothing about the fix.
+
+Also: `patch_gen.py` skips an entry whose replacement is already present, so a second run over the same generated
+files is safe. Before this, the far-plane entry (23), whose replacement contains its anchor, was applied twice.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
