@@ -1861,7 +1861,7 @@ static void log_batch(uint64_t idx, const Nv2aSurface *s, const Nv2aBatch *b, co
                     si->tex.offset, si->tex.width, si->tex.height, si->tex.color,
                     si->normalised ? " norm" : " lin", si->cube ? " cube" : "");
     }
-    if (x->vsh) {
+    if (x->vsh && x->vsh->attrs) {   /* not for geometry the back end holds (geom_key) */
         const Nv2aVshBatch *vb = x->vsh;
         uint32_t i, k;
         fprintf(stderr, "    vsh on GPU: %u verts x %u attrs, %u indices\n", vb->nverts, vb->stride, vb->nindices);
@@ -2417,6 +2417,158 @@ static int be_vsh_gpu(const uint32_t (*prog)[4], uint32_t len, uint32_t hash)
     return 0;
 }
 
+/* Converted geometry kept across frames (Nv2aVshBatch.geom_key, NOTES 28).
+ * A key gets buffers of its own the second flip it is drawn with data, so
+ * geometry the title rewrites every frame (new bytes, new key) never does.
+ * Entries unused for GEOM_IDLE flips go when the table or the byte budget
+ * fills; a key seen only once goes after two flips. RECOMP_VSH_GEOM_CACHE=0
+ * (read by the executor) turns it off. */
+typedef struct {
+    uint64_t key;
+    ID3D11Buffer *attr, *idx;
+    ID3D11ShaderResourceView *srv;      /* NULL: seen, not held yet */
+    uint32_t nverts, nindices, bytes;
+    uint64_t seen_flip, used_flip;
+} GeomEntry;
+#define GEOM_MAX    16384
+#define GEOM_TAB    32768               /* power of two, > GEOM_MAX */
+#define GEOM_BUDGET (384u << 20)
+#define GEOM_IDLE   300
+static GeomEntry s_geom[GEOM_MAX];
+static int s_geom_n;
+static int s_geom_tab[GEOM_TAB];        /* index + 1, linear probing */
+static uint64_t s_geom_bytes;
+
+static GeomEntry *geom_find(uint64_t key)
+{
+    uint32_t h = (uint32_t)(key ^ key >> 32) & (GEOM_TAB - 1);
+    for (;;) {
+        int i = s_geom_tab[h];
+        if (!i)
+            return NULL;
+        if (s_geom[i - 1].key == key)
+            return &s_geom[i - 1];
+        h = (h + 1) & (GEOM_TAB - 1);
+    }
+}
+
+static void geom_tab_add(int i)
+{
+    uint32_t h = (uint32_t)(s_geom[i].key ^ s_geom[i].key >> 32) & (GEOM_TAB - 1);
+    while (s_geom_tab[h])
+        h = (h + 1) & (GEOM_TAB - 1);
+    s_geom_tab[h] = i + 1;
+}
+
+/* Drop held entries unused since `idle` flips ago and seen-only ones older than
+ * two flips, then rebuild the table. */
+static void geom_evict(uint64_t idle)
+{
+    int i, j = 0;
+    for (i = 0; i < s_geom_n; i++) {
+        GeomEntry *e = &s_geom[i];
+        int drop = e->srv ? e->used_flip + idle < s_flip_count : e->seen_flip + 2 < s_flip_count;
+        if (drop) {
+            if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
+            if (e->attr) ID3D11Buffer_Release(e->attr);
+            if (e->idx) ID3D11Buffer_Release(e->idx);
+            s_geom_bytes -= e->bytes;
+        } else {
+            s_geom[j++] = *e;
+        }
+    }
+    s_geom_n = j;
+    memset(s_geom_tab, 0, sizeof s_geom_tab);
+    for (i = 0; i < s_geom_n; i++)
+        geom_tab_add(i);
+}
+
+static int geom_room(uint32_t bytes)
+{
+    if (s_geom_n < GEOM_MAX && s_geom_bytes + bytes <= GEOM_BUDGET)
+        return 1;
+    geom_evict(GEOM_IDLE);
+    if (s_geom_n < GEOM_MAX && s_geom_bytes + bytes <= GEOM_BUDGET)
+        return 1;
+    geom_evict(2);
+    return s_geom_n < GEOM_MAX && s_geom_bytes + bytes <= GEOM_BUDGET;
+}
+
+/* The held entry for this batch, making one if it is due; NULL: upload it as usual. */
+static GeomEntry *geom_entry(const Nv2aVshBatch *v)
+{
+    GeomEntry *e = geom_find(v->geom_key);
+    uint32_t abytes = v->nverts * v->stride * 16u, ibytes = v->nindices * 4u;
+    D3D11_BUFFER_DESC bd;
+    D3D11_SUBRESOURCE_DATA sr;
+    D3D11_SHADER_RESOURCE_VIEW_DESC sd;
+
+    if (e && e->srv)
+        return e;
+    if (!v->attrs || !abytes || !ibytes)
+        return NULL;
+    if (!e) {                                   /* first sighting: just remember it */
+        if (!geom_room(0))
+            return NULL;
+        e = &s_geom[s_geom_n];
+        memset(e, 0, sizeof *e);
+        e->key = v->geom_key;
+        e->seen_flip = s_flip_count;
+        geom_tab_add(s_geom_n++);
+        return NULL;
+    }
+    if (e->seen_flip == s_flip_count)
+        return NULL;
+    if (s_geom_bytes + abytes + ibytes > GEOM_BUDGET) {
+        uint64_t key = e->key;
+        if (!geom_room(abytes + ibytes) || !(e = geom_find(key)))
+            return NULL;
+    }
+    memset(&bd, 0, sizeof bd);
+    bd.ByteWidth = abytes;
+    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    bd.StructureByteStride = 16;
+    memset(&sr, 0, sizeof sr);
+    sr.pSysMem = v->attrs;
+    if (FAILED(ID3D11Device_CreateBuffer(s_dev, &bd, &sr, &e->attr)))
+        return NULL;
+    memset(&sd, 0, sizeof sd);
+    sd.Format = DXGI_FORMAT_UNKNOWN;
+    sd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    sd.Buffer.NumElements = abytes / 16u;
+    memset(&bd, 0, sizeof bd);
+    bd.ByteWidth = ibytes;
+    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    sr.pSysMem = v->indices;
+    if (FAILED(ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)e->attr, &sd, &e->srv))
+        || FAILED(ID3D11Device_CreateBuffer(s_dev, &bd, &sr, &e->idx))) {
+        if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
+        ID3D11Buffer_Release(e->attr);
+        e->srv = NULL; e->attr = NULL;
+        return NULL;
+    }
+    e->nverts = v->nverts;
+    e->nindices = v->nindices;
+    e->bytes = abytes + ibytes;
+    e->used_flip = s_flip_count;
+    s_geom_bytes += e->bytes;
+    return e;
+}
+
+static int be_vsh_geom_cached(uint64_t key, uint32_t *nverts, uint32_t *nindices)
+{
+    GeomEntry *e = geom_find(key);
+    if (!e || !e->srv)
+        return 0;
+    e->used_flip = s_flip_count;
+    *nverts = e->nverts;
+    *nindices = e->nindices;
+    return 1;
+}
+
 /* Upload a vsh batch's attributes, indices and constants and bind its vertex
  * shader. *first_index is where its indices start; 0 if it does not fit. */
 static int vsh_upload(const Nv2aVshBatch *v, UINT *first_index)
@@ -2431,10 +2583,15 @@ static int vsh_upload(const Nv2aVshBatch *v, UINT *first_index)
         always_vc = getenv("RECOMP_D3D11_VC_ALWAYS") != NULL;
         always_discard = getenv("RECOMP_D3D11_VSH_DISCARD") != NULL;
     }
-    if (!vs || abytes + 16 > VSH_ATTR_BYTES || ibytes > VSH_IDX_BYTES)
+    GeomEntry *ge = v->geom_key ? geom_entry(v) : NULL;
+
+    if (!vs)
+        return 0;
+    if (ge)
+        goto constants;
+    if (!v->attrs || abytes + 16 > VSH_ATTR_BYTES || ibytes > VSH_IDX_BYTES)
         return 0;
     if (always_discard) { s_attr_off = VSH_ATTR_BYTES; s_idx_off = VSH_IDX_BYTES; }
-    if (always_vc) s_vc_gen = v->const_gen + 1;
     if (s_attr_off + abytes > VSH_ATTR_BYTES) s_attr_off = VSH_ATTR_BYTES;   /* wrap: discard */
     if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)s_attr_buf, 0,
                                        s_attr_off == VSH_ATTR_BYTES || !s_attr_off ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &m)))
@@ -2452,6 +2609,8 @@ static int vsh_upload(const Nv2aVshBatch *v, UINT *first_index)
     memcpy((uint8_t *)m.pData + s_idx_off, v->indices, ibytes);
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)s_idx_buf, 0);
 
+constants:
+    if (always_vc) s_vc_gen = v->const_gen + 1;
     if (v->const_gen != s_vc_gen) {
         ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_vc_buf, 0, NULL, v->constants, 0, 0);
         s_vc_gen = v->const_gen;
@@ -2460,7 +2619,7 @@ static int vsh_upload(const Nv2aVshBatch *v, UINT *first_index)
     memcpy(cb.imm, v->imm, sizeof cb.imm);
     for (k = 0; k < 16; k++)
         cb.slot[k] = v->slot[k];
-    cb.vbase = s_attr_off / 16u;
+    cb.vbase = ge ? 0 : s_attr_off / 16u;
     cb.vstride = v->stride;
     cb.fog_en = v->fog_enable;
     cb.fog_mode = v->fog_mode;
@@ -2471,17 +2630,22 @@ static int vsh_upload(const Nv2aVshBatch *v, UINT *first_index)
     memcpy(m.pData, &cb, sizeof cb);
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)s_vd_buf, 0);
 
-    *first_index = s_idx_off / 4u;
-    s_attr_off += (abytes + 15u) & ~15u;
-    s_idx_off += ibytes;
-    ID3D11DeviceContext_IASetIndexBuffer(s_ctx, s_idx_buf, DXGI_FORMAT_R32_UINT, 0);
+    if (ge) {
+        *first_index = 0;
+        ID3D11DeviceContext_IASetIndexBuffer(s_ctx, ge->idx, DXGI_FORMAT_R32_UINT, 0);
+    } else {
+        *first_index = s_idx_off / 4u;
+        s_attr_off += (abytes + 15u) & ~15u;
+        s_idx_off += ibytes;
+        ID3D11DeviceContext_IASetIndexBuffer(s_ctx, s_idx_buf, DXGI_FORMAT_R32_UINT, 0);
+    }
     ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
     ID3D11DeviceContext_VSSetShader(s_ctx, vs, NULL, 0);
     {
         ID3D11Buffer *cbs[2] = { s_vc_buf, s_vd_buf };
         ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 3, 2, cbs);
     }
-    ID3D11DeviceContext_VSSetShaderResources(s_ctx, 9, 1, &s_attr_srv);
+    ID3D11DeviceContext_VSSetShaderResources(s_ctx, 9, 1, ge ? &ge->srv : &s_attr_srv);
     return 1;
 }
 
@@ -2629,7 +2793,7 @@ static void be_draw_ext(const Nv2aSurface *s, const Nv2aBatch *b, const Nv2aBatc
                     if (x->vsh_hash == want[w] && shown[w] < 4) {
                         shown[w]++;
                         log_batch(s_draws_this_flip - 1, s, b, x);
-                        if (x->vsh && shown[w] == 1) {          /* the constants it ran with, once */
+                        if (x->vsh && x->vsh->attrs && shown[w] == 1) {          /* the constants it ran with, once */
                             int k;
                             for (k = 0; k < 16; k++)
                                 fprintf(stderr, "    v%d %s %g %g %g %g\n", k, x->vsh->slot[k] != 0xFF ? "array" : "imm",
@@ -2954,7 +3118,7 @@ vertices_ready:
          * and everything else that picks the pixels (state, combiners, bound views);
          * 'D' when a texture was decoded for this batch. */
         uint32_t hg = 2166136261u, hc = 2166136261u, ht = 2166136261u;
-        if (x->vsh) {
+        if (x->vsh && x->vsh->attrs) {
             hg = fnv_bytes(hg, x->vsh->attrs, (size_t)x->vsh->nverts * x->vsh->stride * 16u);
             hg = fnv_bytes(hg, x->vsh->indices, (size_t)x->vsh->nindices * 4u);
             hg = fnv_bytes(hg, x->vsh->imm, sizeof x->vsh->imm);
@@ -2971,7 +3135,7 @@ vertices_ready:
         fprintf(stderr, "[BH] %llu %llu %08X %08X %08X %08X %u%s", (unsigned long long)s_flip_count,
                 (unsigned long long)(s_draws_this_flip - 1), x->vsh_hash, hg, hc, ht, b->count / 3,
                 s_tex_decodes != dec0 ? " D" : " -");
-        if (x->vsh)      /* the parts of geom: attributes, indices, SET_VERTEX_DATA; sizes */
+        if (x->vsh && x->vsh->attrs)      /* the parts of geom: attributes, indices, SET_VERTEX_DATA; sizes */
             fprintf(stderr, " a %08X i %08X m %08X nv %u st %u", fnv_bytes(2166136261u, x->vsh->attrs, (size_t)x->vsh->nverts * x->vsh->stride * 16u),
                     fnv_bytes(2166136261u, x->vsh->indices, (size_t)x->vsh->nindices * 4u),
                     fnv_bytes(2166136261u, x->vsh->imm, sizeof x->vsh->imm), x->vsh->nverts, x->vsh->stride);
@@ -3003,7 +3167,7 @@ vertices_ready:
                             x->stage[k].tex.height, x->stage[k].tex.color);
             }
         }
-        if (x->vsh && x->vsh->nverts && x->vsh->slot[0] != 0xFF) {
+        if (x->vsh && x->vsh->attrs && x->vsh->nverts && x->vsh->slot[0] != 0xFF) {
             const float *p = x->vsh->attrs[x->vsh->slot[0]], *q = x->vsh->attrs[(size_t)(x->vsh->nverts - 1) * x->vsh->stride + x->vsh->slot[0]];
             fprintf(stderr, " p0 %g %g %g pN %g %g %g i0 %u", p[0], p[1], p[2], q[0], q[1], q[2], x->vsh->nindices ? x->vsh->indices[0] : 0);
         }
@@ -4349,9 +4513,9 @@ static void be_flip(void)
                  fps_n, (unsigned long long)s_draw_count, (unsigned long long)s_tri_count);
         SetWindowTextA(s_hwnd, t);
         if (s_trace) {
-            fprintf(stderr, "[D3D11] %u fps; draws %llu tris %llu texdecodes %llu rts %d texs %d dropped %llu\n",
+            fprintf(stderr, "[D3D11] %u fps; draws %llu tris %llu texdecodes %llu rts %d texs %d geom %d (%.0f MB) dropped %llu\n",
                     fps_n, (unsigned long long)s_draw_count, (unsigned long long)s_tri_count,
-                    (unsigned long long)s_tex_decodes, s_rt_n, s_tex_n,
+                    (unsigned long long)s_tex_decodes, s_rt_n, s_tex_n, s_geom_n, s_geom_bytes / 1048576.0,
                     (unsigned long long)s_batches_dropped);
             fflush(stderr);
         }
@@ -4362,7 +4526,8 @@ static void be_flip(void)
 
 static const Nv2aBackend s_backend = { be_clear, be_draw, be_flip, be_draw_ext, be_idle, be_vsh_gpu,
                                         be_zpass_begin, be_zpass_end,
-                                        be_zq_begin, be_zq_end, be_zq_poll };
+                                        be_zq_begin, be_zq_end, be_zq_poll,
+                                        be_vsh_geom_cached };
 
 void rsc2_d3d11_backend_register(void)
 {

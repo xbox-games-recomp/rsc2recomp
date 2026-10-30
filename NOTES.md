@@ -706,7 +706,8 @@ line for 10 s, then a short drive; RES 2, vsync off; flips/s at the line / drivi
 
 RES 1 is no faster than RES 2, so the cost is on the CPU side, about 28 us per extra model draw. The game thread
 spends ~80% of a frame in `sub_003683A0` (D3D spinning on a GPU status register until the executor is idle).
-With vsync on, frame times sit at ~25 ms or ~44 ms for hundreds of flips with the same scene, so single runs
+(Later found: the scripted runs' window is hidden, and Windows throttles presenting there, so vsync-on numbers
+from them mean nothing; see 28.) With vsync on, frame times sit at ~25 ms or ~44 ms for hundreds of flips with the same scene, so single runs
 mislead.
 
 The cause of the blank card in 25 is most likely the distance fade: from `0.8 * [cam + 0x14]` (339 on SS1) to
@@ -736,7 +737,8 @@ still hashed at every bind; `RECOMP_D3D11_TEXCHECK=draw` restores the old check 
 | 26 | 41 / 45 | 56 / 64 |
 | 27 | 51 / 57 | 69 / 76 |
 
-4x with vsync on: 51 / 56. `get_texture` is now ~1 ms a flip.
+`get_texture` is now ~1 ms a flip. (A "4x with vsync on: 51 / 56" first written here was a vsync-off run:
+the bench's environment variables carried over between runs in one shell. Fixed in the bench; see 28.)
 
 Where the rest goes at 4x (~17 ms): the executor's vertex gather in `raster_batch_vsh_gpu` (~7 ms: ~320,000
 vertices a frame read from guest memory and written out as float4 attributes; reading each attribute's range
@@ -744,6 +746,37 @@ once per batch instead of per vertex changed nothing, so it is the data volume),
 the draw (~3.7 ms). The game thread spends ~80% of a frame in `sub_003683A0`, D3D spinning on a GPU status
 register until the executor is idle. Next step would be caching converted static geometry across frames. The
 game-thread sampler (`RECOMP_SAMPLE`) names toolkit functions unreliably (folded/static symbols).
+
+## 28. Frame rate: converted geometry kept across frames (toolkit + back end)
+
+The rest of 27's 4x frame was the executor's gather (~7 ms: ~320,000 vertices a frame read from guest memory,
+deduplicated and written out as float4 attributes) and its upload (part of the ~4 ms flush). Almost all of it is
+static geometry, the same bytes every frame.
+
+Toolkit (`nv2a_pb_exec.c`, `nv2a_backend.h`): `raster_batch_vsh_gpu` computes `Nv2aVshBatch.geom_key`, a 64-bit hash
+of the primitive, the index list, each array attribute's layout and every guest byte the gather reads for it (the
+span between the lowest and highest index). Hashing reads the same bytes the gather did, but sequentially and
+without converting or writing anything. No key (0) for inline arrays, attributes without address or stride, spans
+outside guest RAM or much larger than the vertices they hold, or `RECOMP_VSH_GEOM_CACHE=0`. New optional hook
+`Nv2aBackend.vsh_geom_cached(key, &nverts, &nindices)`: when the back end holds the key, the executor skips the gather
+and sends the batch with `attrs`/`indices` NULL.
+
+Back end (`d3d11_backend.c`): a key gets its own immutable attribute buffer (+ SRV) and index buffer the second flip
+it is drawn with data, so geometry the title rewrites every frame (new bytes, new key) never does. Up to 16384 keys,
+384 MB; entries unused for 300 flips, and keys seen only once for over two flips, go when either fills. The
+periodic `RECOMP_D3D11_TRACE` line shows the count and size. Debug dumps that read `attrs` skip held batches.
+Frames compared with the cache off: same picture (start line and driving).
+
+Bench (Pro SS1 start line + short drive, RES 2, vsync off; the bench now clears RECOMP_* between runs):
+
+| build | 4x flips/s | 1x flips/s |
+|---|---|---|
+| 27 | 51 / 57 | 69 / 76 |
+| 28 | 74 / 79 | 98 / 100 |
+
+4x: 12.2 ms a frame, ~5700 keys held, 44 MB. Vsync-on numbers from the scripted runs are not usable (their window
+is hidden; presenting there is throttled to ~25 fps whatever the frame time). Needs the user's check in the
+launcher with vsync on.
 
 ## Next
 
