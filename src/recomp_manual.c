@@ -972,3 +972,31 @@ float recomp_tree_lod_scale(void)
     }
     return scale;
 }
+
+/* The switch from a tree's model to its flat card (NOTES 25, 26):
+ * RECOMP_TREE_MODEL=<n> keeps models n times further. Default 1 (the console):
+ * models cost ~28 us of CPU each, and the distance fade below fixes the drop. */
+float recomp_tree_model_scale(void)
+{
+    static float scale = -1.0f;
+    if (scale < 0.0f) {
+        const char *e = getenv("RECOMP_TREE_MODEL");
+        float d = e ? (float)atof(e) : 1.0f;
+        scale = d > 0.0f ? 1.0f / d : 1.0f;
+    }
+    return scale;
+}
+
+/* The per-tree distance fade (NOTES 26): trees fade out over the last fifth of
+ * the zone's view distance and are dropped beyond it. RECOMP_TREE_FADE=<n>
+ * moves both n times further; default RECOMP_TREE_DETAIL. */
+float recomp_tree_fade_scale(void)
+{
+    static float scale = -1.0f;
+    if (scale < 0.0f) {
+        const char *e = getenv("RECOMP_TREE_FADE");
+        float d = e ? (float)atof(e) : 0.0f;
+        scale = d > 0.0f ? 1.0f / d : recomp_tree_lod_scale();
+    }
+    return scale;
+}

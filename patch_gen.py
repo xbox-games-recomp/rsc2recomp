@@ -31,22 +31,29 @@ PATCHES=[
  # ... and the switch from a tree's model to its flat card: sub_0010F0D0 crossfades by projected size
  # between [type + 0x2F8] * [0x4947D0 + 0x80E0] * [+0x80D0] and that * [+0x80DC] (fade 1.0 = card only),
  # and sub_00114390 / sub_00114860 / sub_00114C80 draw the model only above the size window
- # [+0x8114]..[+0x8110]. All of these are multiplied by the knob's scale, so models last n times
- # further. At 4x the card that took over a distant tree model left nothing on screen. NOTES 25.
- ('    MEMF(esp + 0x40) = xmm0.f[0]; /* movss */\n    xmm0 = XMM_SCALAR(MEMF(edx + 0x14)); /* movss */\n',
-  '    { extern float recomp_tree_lod_scale(void); xmm0.f[0] = xmm0.f[0] * recomp_tree_lod_scale(); xmm1.f[0] = xmm1.f[0] * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n    MEMF(esp + 0x40) = xmm0.f[0]; /* movss */\n    xmm0 = XMM_SCALAR(MEMF(edx + 0x14)); /* movss */\n'),
+ # [+0x8114]..[+0x8110]. All of these are multiplied by recomp_tree_model_scale() (RECOMP_TREE_MODEL,
+ # default 1 = the console's: each extra model costs ~28 us of CPU). NOTES 25, 26.
+ ('    xmm1.f[0] = xmm1.f[0] * xmm0.f[0]; /* mulss */\n    MEMF(esp + 0x40) = xmm0.f[0]; /* movss */\n',
+  '    xmm1.f[0] = xmm1.f[0] * xmm0.f[0]; /* mulss */\n    { extern float recomp_tree_model_scale(void); xmm0.f[0] = xmm0.f[0] * recomp_tree_model_scale(); xmm1.f[0] = xmm1.f[0] * recomp_tree_model_scale(); } /* patch_gen: NOTES 25 */\n    MEMF(esp + 0x40) = xmm0.f[0]; /* movss */\n'),
+ # ... and its distance fade: from [ctx + 0x812C] (0.8) * the camera's far distance [cam + 0x14] (the zone's
+ # view distance, 424 units on SS1) to that distance a tree's alpha drops to 0, and beyond it the tree leaves
+ # the list. Full models ignore that alpha, cards do not: a distant model that turned into a card past 339
+ # units came back faint or invisible. Both reads are multiplied by recomp_tree_fade_scale() (RECOMP_TREE_FADE,
+ # default the knob). NOTES 26.
+ ('    xmm0 = XMM_SCALAR(MEMF(edx + 0x14)); /* movss */\n    xmm0.f[0] = xmm0.f[0] * MEMF(ecx + 0x812C); /* mulss */\n    MEMF(esp + 0x3C) = xmm1.f[0]; /* movss */\n    xmm1 = XMM_SCALAR(MEMF(edx + 0x14)); /* movss */\n',
+  '    { extern float recomp_tree_fade_scale(void); xmm0 = XMM_SCALAR(MEMF(edx + 0x14) / recomp_tree_fade_scale()); } /* patch_gen: NOTES 26 */\n    xmm0.f[0] = xmm0.f[0] * MEMF(ecx + 0x812C); /* mulss */\n    MEMF(esp + 0x3C) = xmm1.f[0]; /* movss */\n    { extern float recomp_tree_fade_scale(void); xmm1 = XMM_SCALAR(MEMF(edx + 0x14) / recomp_tree_fade_scale()); } /* patch_gen: NOTES 26 */\n'),
  ('    xmm0 = XMM_SCALAR(MEMF(ebp + 0x8110)); /* movss */\n',
-  '    { extern float recomp_tree_lod_scale(void); xmm0 = XMM_SCALAR(MEMF(ebp + 0x8110) * recomp_tree_lod_scale()); } /* patch_gen: NOTES 25 */\n', 2),
+  '    { extern float recomp_tree_model_scale(void); xmm0 = XMM_SCALAR(MEMF(ebp + 0x8110) * recomp_tree_model_scale()); } /* patch_gen: NOTES 25 */\n', 2),
  ('    xmm2 = XMM_SCALAR(MEMF(ebp + 0x8110)); /* movss */\n',
-  '    { extern float recomp_tree_lod_scale(void); xmm2 = XMM_SCALAR(MEMF(ebp + 0x8110) * recomp_tree_lod_scale()); } /* patch_gen: NOTES 25 */\n', 2),
+  '    { extern float recomp_tree_model_scale(void); xmm2 = XMM_SCALAR(MEMF(ebp + 0x8110) * recomp_tree_model_scale()); } /* patch_gen: NOTES 25 */\n', 2),
  ('    xmm0.f[0] = xmm0.f[0] - MEMF(ebp + 0x8114); /* subss */\n',
-  '    { extern float recomp_tree_lod_scale(void); xmm0.f[0] = xmm0.f[0] - MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n', 3),
+  '    { extern float recomp_tree_model_scale(void); xmm0.f[0] = xmm0.f[0] - MEMF(ebp + 0x8114) * recomp_tree_model_scale(); } /* patch_gen: NOTES 25 */\n', 3),
  ('    xmm2.f[0] = xmm2.f[0] - MEMF(ebp + 0x8114); /* subss */\n',
-  '    { extern float recomp_tree_lod_scale(void); xmm2.f[0] = xmm2.f[0] - MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n'),
+  '    { extern float recomp_tree_model_scale(void); xmm2.f[0] = xmm2.f[0] - MEMF(ebp + 0x8114) * recomp_tree_model_scale(); } /* patch_gen: NOTES 25 */\n'),
  ('    _fca = xmm0.f[0]; _fcb = MEMF(ebp + 0x8114); /* comiss */\n',
-  '    { extern float recomp_tree_lod_scale(void); _fca = xmm0.f[0]; _fcb = MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n'),
+  '    { extern float recomp_tree_model_scale(void); _fca = xmm0.f[0]; _fcb = MEMF(ebp + 0x8114) * recomp_tree_model_scale(); } /* patch_gen: NOTES 25 */\n'),
  ('    _fca = xmm2.f[0]; _fcb = MEMF(ebp + 0x8114); /* comiss */\n',
-  '    { extern float recomp_tree_lod_scale(void); _fca = xmm2.f[0]; _fcb = MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n'),
+  '    { extern float recomp_tree_model_scale(void); _fca = xmm2.f[0]; _fcb = MEMF(ebp + 0x8114) * recomp_tree_model_scale(); } /* patch_gen: NOTES 25 */\n'),
 
  # The render queue's fixed arrays, never full on the console but overrun once the tree knob lets more
  # objects through (a 4x drive crashed in the start flyby at ~2280 draws, sub_00273360). Each insert is

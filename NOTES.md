@@ -674,7 +674,8 @@ Traced with temporary prints over a scripted drive at the same place (Pro SS1 st
   and those cards do render; why the card left nothing at the user's spot was not found.
 
 Two env-gated test switches in a test build, tried by the user at their spot: scaling the distance fade by the
-knob did **not** help; scaling the model -> card switch did. **User-confirmed (2026-10-29).**
+knob did **not** help; scaling the model -> card switch did. **User-confirmed (2026-10-29).** (The fade test
+was not valid: the switch went into the launcher's extra arguments, not its environment. See 26.)
 
 Fix (`patch_gen.py`): the model -> card thresholds above are multiplied by `recomp_tree_lod_scale()`, so tree
 models last n times further. The distance fade is left as the console has it.
@@ -687,6 +688,36 @@ in fixed arrays after their counts: 1536 at `+0x12254`, 1024 at `+0x1B258`, 256 
 clamped (an overflow rewrites the last slot). With the clamps, 4x drives finished without a crash.
 Final build, scripted 48 s drive: 4x 26.3 flips/s, 1x 28.5, both without a crash. The machine was slow that
 evening (1x was ~65 earlier), so these numbers don't compare with 23's.
+
+## 26. Trees at 4x, cheaper: the distance fade instead of longer models (patch_gen fix)
+
+User (2026-10-30): 25 works, but the frame rate fell to 35-40 fps. Fixed benchmark (`bench.ps1`: Pro SS1 start
+line for 10 s, then a short drive; RES 2, vsync off; flips/s at the line / driving; draws per flip):
+
+| build | flips/s | draws |
+|---|---|---|
+| console (1x) | 56 / 64 | 807 |
+| 4x, models at the console distance | 51 / 55 | 974 |
+| 4x, models 2x | 43 / 47 | 1113 |
+| 4x, models 4x (25) | 33 / 34 | 1348 |
+| 4x, models at the console distance + distance fade 4x (26) | 41 / 47 | 1240 |
+| same, fade 2x | 46 / 52 | 1067 |
+| 26 as committed (defaults), 4x | 41 / 45 | 1205 |
+
+RES 1 is no faster than RES 2, so the cost is on the CPU side, about 28 us per extra model draw. The game thread
+spends ~80% of a frame in `sub_003683A0` (D3D spinning on a GPU status register until the executor is idle).
+With vsync on, frame times sit at ~25 ms or ~44 ms for hundreds of flips with the same scene, so single runs
+mislead.
+
+The cause of the blank card in 25 is most likely the distance fade: from `0.8 * [cam + 0x14]` (339 on SS1) to
+`[cam + 0x14]` (424) a tree's alpha byte drops to 0. Full models ignore that alpha and cards do not, so a distant
+model that turned into a card came back faint or invisible. Retested by the user with the switch in the launcher's
+environment this time: models at the console distance plus the fade 4x keeps the trees. **User-confirmed
+(2026-10-30)** (frame rate about the same with vsync on: frames still over 16.7 ms).
+
+Fix (`patch_gen.py`, `src/recomp_manual.c`): `recomp_tree_fade_scale()` (RECOMP_TREE_FADE, default the knob)
+multiplies both reads of `[cam + 0x14]` in `sub_0010F0D0`. `recomp_tree_model_scale()` (RECOMP_TREE_MODEL) now
+defaults to 1, the console's model distance. Launcher help text back to "draws them further".
 
 ## Next
 
