@@ -1,5 +1,7 @@
 # RalliSport Challenge 2 — Static Recompilation
 
+![Gameplay](docs/gameplay.webp)
+
 A native Windows (x64) port of the original-Xbox *RalliSport Challenge 2* (Digital Illusions / Microsoft, 2004).
 Every x86 function in the retail `default.xbe` is translated to C, compiled with MSVC and linked against a
 replacement Xbox kernel, audio, input and GPU runtime; the NV2A command stream is rendered with Direct3D 11.
