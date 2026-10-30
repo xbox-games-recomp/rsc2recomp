@@ -4,7 +4,7 @@ Each patch is (file-glob, anchor text, replacement). The anchor must be found in
 one place; a missing anchor is reported (the generated code changed under us).
 """
 import glob,os,sys,re
-GEN=os.path.join(os.path.dirname(os.path.abspath(__file__)),'src','recomp','gen','').replace('\\','/')
+GEN=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),'src','recomp','gen','').replace('\\','/')
 PATCHES=[
  # (anchor, replacement) pairs go here; see mm3recomp/patch_gen.py for examples.
 

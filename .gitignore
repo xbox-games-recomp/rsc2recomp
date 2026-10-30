@@ -9,7 +9,7 @@
 *.iso
 *.xiso
 
-# Generated C from the XBE (regenerate with regen.ps1)
+# Generated C from the XBE (regenerate with scripts\regen.ps1)
 /src/recomp/gen/
 
 # Builds and snapshot executables (contain recompiled game code)

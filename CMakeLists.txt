@@ -24,7 +24,7 @@ add_compile_definitions(
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 #
 # The toolkit is the xboxrecomp/ git submodule, with patches/xboxrecomp.patch
-# applied on top (apply_patches.ps1).
+# applied on top (scripts\apply_patches.ps1).
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xboxrecomp" CACHE PATH
     "Path to the xboxrecomp toolkit root directory")
 

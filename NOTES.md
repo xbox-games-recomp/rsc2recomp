@@ -4,7 +4,7 @@ Scaffolded 2026-10-28 from [mm3recomp](https://github.com/xbox-games-recomp/mm3r
 studio, DICE). Items are numbered like mm3recomp's NOTES.md ("MM3 #n" refers to that file).
 
 Layout: toolkit = submodule `xboxrecomp\` pinned to v0.15.0 (6376eb8) with mm3recomp's
-`patches\xboxrecomp.patch` (game-agnostic fixes) applied by `apply_patches.ps1`. Game files:
+`patches\xboxrecomp.patch` (game-agnostic fixes) applied by `scripts\apply_patches.ps1`. Game files:
 `D:\Documents\Xbox Recompilation\rsc2_files`, junctioned in as `game_files\` (ignored, never committed).
 
 ## 1. XBE fingerprint
