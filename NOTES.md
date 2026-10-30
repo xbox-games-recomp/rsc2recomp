@@ -627,6 +627,8 @@ about 40% at 530. Same code and data as the console, so the console shows the sa
 about 2060 units deep (logged), 58.7 flips/s on the scripted drive; the countdown frame shows the tree line along
 the road running on to the vanishing point (`frames\sn` vs `frames\f4`, f00051). Launcher help text updated.
 
+**User (2026-10-29): still drops at 4x** with this build (`flicker\20261029_210912` 80-232). Not a cull: see 25.
+
 ## 24. Window took ~20 s to open: XNet's DHCP wait (patch_gen fix)
 
 User report: from the launcher, the game window appeared only ~20 s after Run. Timed headless (launch to
@@ -648,6 +650,43 @@ say nothing about the fix.
 
 Also: `patch_gen.py` skips an entry whose replacement is already present, so a second run over the same generated
 files is safe. Before this, the far-plane entry (23), whose replacement contains its anchor, was applied twice.
+
+## 25. Distant trees at 4x: the model -> card switch; render-queue overruns (patch_gen fix)
+
+User sample at 4x (`flicker\20261029_210912`, Career -> Pro -> SS1 near the start, bonnet camera, reversing):
+between flips 3166 and 3168 one `6B1E852A` batch of 124 triangles (a tree model of ~62 cards) goes and nothing
+takes its place; the trees at the end of the road open onto the buildings behind.
+
+Traced with temporary prints over a scripted drive at the same place (Pro SS1 start, forward then reverse):
+- At 4x every cull keeps the tree: quadtree node and box tests, the group size cull, the per-tree size cull.
+- `sub_0010F0D0` builds the per-frame tree list (24-byte entries: object, distance, ..., alpha byte at +0x12,
+  fade at +0x14), in two loops (`0x10F1D0` near list, `0x10F6D0` main list). The fade crossfades model and
+  card by projected size: 1.0 = card only (`sub_00114C80` queues it at `+0x1F14` for `sub_001101E0`),
+  below 1 = the model drawn by `sub_00112530` (plus the card at alpha `255 * sin(fade * pi / 2)`). The size
+  thresholds (`[type + 0x2F8] * [0x4947D0 + 0x80E0] * [+0x80D0]`, times `[+0x80DC]` for the other end) and the
+  model's own size window (`[+0x8114]..[+0x8110]` in `sub_00114390`, `sub_00114860`, `sub_00114C80`) were not
+  scaled by `RECOMP_TREE_DETAIL`. While reversing, each drop in the scripted drive was a model whose fade
+  reached 1.0.
+- The alpha byte also carries a distance fade, from `[cam + 0x14] * [+0x812C]` (339 on SS1) to `[cam + 0x14]`
+  (424, the zone's view distance), beyond which the entry is removed. Unscaled too, so trees still end at
+  ~424 units whatever the far plane (23) allows.
+- Forcing every queued object to its card (test toggle) turns buildings, cars and barriers into cards as well,
+  and those cards do render; why the card left nothing at the user's spot was not found.
+
+Two env-gated test switches in a test build, tried by the user at their spot: scaling the distance fade by the
+knob did **not** help; scaling the model -> card switch did. **User-confirmed (2026-10-29).**
+
+Fix (`patch_gen.py`): the model -> card thresholds above are multiplied by `recomp_tree_lod_scale()`, so tree
+models last n times further. The distance fade is left as the console has it.
+
+Also found: plain 4x (23's far plane) crashed a scripted drive in the start flyby at ~2280 draws per flip
+(null ICALLs, then an access violation in `sub_00273360`). The render queue (`sub_00273E70`) keeps 24-byte items
+in fixed arrays after their counts: 1536 at `+0x12254`, 1024 at `+0x1B258`, 256 at `+0x2125C` and `+0x22A60`
+(the last followed by the zone's view distance at `+0x24268`). The tree list holds 3104 (`+0x10`) and
+`sub_00273890`'s copy of it 2048 (`+0x2978`). The console never fills them; the knob can. Every insert is now
+clamped (an overflow rewrites the last slot). With the clamps, 4x drives finished without a crash.
+Final build, scripted 48 s drive: 4x 26.3 flips/s, 1x 28.5, both without a crash. The machine was slow that
+evening (1x was ~65 earlier), so these numbers don't compare with 23's.
 
 ## Next
 

@@ -28,6 +28,48 @@ PATCHES=[
  # on SS1, while their fog is capped at 85%), is multiplied by it in the render traversal sub_00273E70. NOTES 23.
  ('loc_002741D0: ;\n    xmm0 = XMM_SCALAR(MEMF(0x3DF758)); /* movss */\n    xmm0.f[0] = xmm0.f[0] + MEMF(0x3B8400); /* addss */\n    xmm0.f[0] = xmm0.f[0] * MEMF(esi + 0x24268); /* mulss */\n',
   'loc_002741D0: ;\n    xmm0 = XMM_SCALAR(MEMF(0x3DF758)); /* movss */\n    xmm0.f[0] = xmm0.f[0] + MEMF(0x3B8400); /* addss */\n    xmm0.f[0] = xmm0.f[0] * MEMF(esi + 0x24268); /* mulss */\n    { extern float recomp_tree_lod_scale(void); xmm0.f[0] = xmm0.f[0] / recomp_tree_lod_scale(); } /* patch_gen: NOTES 23 */\n'),
+ # ... and the switch from a tree's model to its flat card: sub_0010F0D0 crossfades by projected size
+ # between [type + 0x2F8] * [0x4947D0 + 0x80E0] * [+0x80D0] and that * [+0x80DC] (fade 1.0 = card only),
+ # and sub_00114390 / sub_00114860 / sub_00114C80 draw the model only above the size window
+ # [+0x8114]..[+0x8110]. All of these are multiplied by the knob's scale, so models last n times
+ # further. At 4x the card that took over a distant tree model left nothing on screen. NOTES 25.
+ ('    MEMF(esp + 0x40) = xmm0.f[0]; /* movss */\n    xmm0 = XMM_SCALAR(MEMF(edx + 0x14)); /* movss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm0.f[0] = xmm0.f[0] * recomp_tree_lod_scale(); xmm1.f[0] = xmm1.f[0] * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n    MEMF(esp + 0x40) = xmm0.f[0]; /* movss */\n    xmm0 = XMM_SCALAR(MEMF(edx + 0x14)); /* movss */\n'),
+ ('    xmm0 = XMM_SCALAR(MEMF(ebp + 0x8110)); /* movss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm0 = XMM_SCALAR(MEMF(ebp + 0x8110) * recomp_tree_lod_scale()); } /* patch_gen: NOTES 25 */\n', 2),
+ ('    xmm2 = XMM_SCALAR(MEMF(ebp + 0x8110)); /* movss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm2 = XMM_SCALAR(MEMF(ebp + 0x8110) * recomp_tree_lod_scale()); } /* patch_gen: NOTES 25 */\n', 2),
+ ('    xmm0.f[0] = xmm0.f[0] - MEMF(ebp + 0x8114); /* subss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm0.f[0] = xmm0.f[0] - MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n', 3),
+ ('    xmm2.f[0] = xmm2.f[0] - MEMF(ebp + 0x8114); /* subss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm2.f[0] = xmm2.f[0] - MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n'),
+ ('    _fca = xmm0.f[0]; _fcb = MEMF(ebp + 0x8114); /* comiss */\n',
+  '    { extern float recomp_tree_lod_scale(void); _fca = xmm0.f[0]; _fcb = MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n'),
+ ('    _fca = xmm2.f[0]; _fcb = MEMF(ebp + 0x8114); /* comiss */\n',
+  '    { extern float recomp_tree_lod_scale(void); _fca = xmm2.f[0]; _fcb = MEMF(ebp + 0x8114) * recomp_tree_lod_scale(); } /* patch_gen: NOTES 25 */\n'),
+
+ # The render queue's fixed arrays, never full on the console but overrun once the tree knob lets more
+ # objects through (a 4x drive crashed in the start flyby at ~2280 draws, sub_00273360). Each insert is
+ # clamped so an overflow rewrites the last slot instead of what follows: the buckets in sub_00273E70
+ # (24-byte items after their counts: 1536 at +0x12254, 1024 at +0x1B258, 256 at +0x2125C and +0x22A60,
+ # the last one followed by the zone's view distance), the tree list sub_0010F0D0 fills (3104 at +0x10),
+ # and sub_00273890's copy of it (2048 at +0x2978). NOTES 25.
+ ('    ecx = MEM32(esi + 0x22A5C);\n    edx = ecx + ecx * 2;\n',
+  '    if (MEM32(esi + 0x22A5C) >= 256) MEM32(esi + 0x22A5C) = 255; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x22A5C);\n    edx = ecx + ecx * 2;\n', 3),
+ ('    ecx = MEM32(esi + 0x22A5C);\n    ecx = ecx + ecx * 2;\n',
+  '    if (MEM32(esi + 0x22A5C) >= 256) MEM32(esi + 0x22A5C) = 255; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x22A5C);\n    ecx = ecx + ecx * 2;\n'),
+ ('    ecx = MEM32(esi + 0x21258);\n    ecx = ecx + ecx * 2;\n',
+  '    if (MEM32(esi + 0x21258) >= 256) MEM32(esi + 0x21258) = 255; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x21258);\n    ecx = ecx + ecx * 2;\n', 3),
+ ('    ecx = MEM32(esi + 0x1B254);\n    ecx = ecx + ecx * 2;\n',
+  '    if (MEM32(esi + 0x1B254) >= 1024) MEM32(esi + 0x1B254) = 1023; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x1B254);\n    ecx = ecx + ecx * 2;\n', 2),
+ ('    ecx = MEM32(esi + 0x12250);\n    ecx = ecx + ecx * 2;\n',
+  '    if (MEM32(esi + 0x12250) >= 1536) MEM32(esi + 0x12250) = 1535; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x12250);\n    ecx = ecx + ecx * 2;\n'),
+ ('loc_0010F276: ;\n    ecx = MEM32(esp + 0x70);\n',
+  'loc_0010F276: ;\n    ecx = MEM32(esp + 0x70);\n    if (MEM32(ecx) >= 3104) MEM32(ecx) = 3103; /* patch_gen: NOTES 25 */\n'),
+ ('loc_0010F764: ;\n    ecx = MEM32(esp + 0x70);\n',
+  'loc_0010F764: ;\n    ecx = MEM32(esp + 0x70);\n    if (MEM32(ecx) >= 3104) MEM32(ecx) = 3103; /* patch_gen: NOTES 25 */\n'),
+ ('loc_00273961: ;\n    eax = MEM32(edi + 0x2974);\n',
+  'loc_00273961: ;\n    if (MEM32(edi + 0x2974) >= 2048) MEM32(edi + 0x2974) = 2047; /* patch_gen: NOTES 25 */\n    eax = MEM32(edi + 0x2974);\n'),
 
  # Boot waited ~20 s before the window opened: the network init (sub_002074E0, after XNetStartup and
  # WSAStartup) polls the check sub_002071F0 with Sleep(100) until XNetGetTitleXnAddr stops answering
