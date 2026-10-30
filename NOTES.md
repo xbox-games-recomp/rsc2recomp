@@ -547,8 +547,7 @@ nearly static camera). `6B1E852A` draws ~126 fewer triangles on exactly those fr
   the same spot; it does not write depth. Not shown to be related.
 - Scripted driving has not reproduced a dropout on a straight; the drop detector also fires on flyby camera
   cuts, so earlier "every run has a 6-flip dropout" counts were flyby cuts.
-Next: find the game code that emits the foliage draws (the D3D inline-draw call's callers) and what it tests per
-tree; or reproduce the user's spot (reverse with wheelspin on the start straight, bonnet camera).
+Found in 23: the game's own size cull of distant tree groups.
 
 ## 22. Race frame rate: visibility tests no longer wait for the GPU (toolkit + back end fix)
 
@@ -580,6 +579,41 @@ The rest of the gap to 162 flips/s is probably the title waiting on some results
 
 Verified in frame dumps: the SS1 drive (pd) looks the same as before and race time now keeps pace with the dumps;
 the Single Race start line (w1, `frames\w1_now.png`) has all three AI cars with their wheels (the tests 20 is for).
+
+## 23. Distant trees popping out: the game's own group cull (found; draw-distance knob)
+
+The trees in the user's third sample (21) are a whole group of distant trees that the game stops submitting.
+Traced from the draw back to the decision:
+
+- Foliage draws come from `sub_00114C80` (cards written inline into the pushbuffer by `sub_001101E0`). It walks a
+  per-frame list (`[queue+0x2974]` entries of 24 bytes at `+0x2978`: object, byte, fade at +0x14; fade 1.0 draws,
+  > 0 draws faded, <= 0 not at all) that `sub_00273890` copies out of the render queue (type-1 items). Every queued
+  tree had fade 1.0: missing trees are missing from the queue.
+- The queue is filled by the render traversal `sub_00273E70`, whose tree candidates come from the frustum cull
+  `sub_002B0E00` -> `sub_002B0D10` (main thread only, one cull context, view 0 = the screen with factor 1.0,
+  views 4-9 = cube-map faces with factor 4.0 on alternate frames). It walks a quadtree with per-node, per-view
+  plane-coherency state (3 bits at `node+0x10`; test variants `0x225470`..`0x226190`, exact) and, for a node
+  fully inside the frustum, `sub_002AF9B0` drops the **whole subtree** when its projected size
+  `radius * cot(fov/2) / distance` is at most `[0x49C89C] * [0x49C8D8]` = 1.0 * 0.019 (0.02 at init by
+  `sub_0010D640`, then the track's value, stored by the loading thread). About a 9-pixel radius at 480 lines:
+  a distant group at that size drops out and comes back as the camera moves, here the wheelspin shake.
+- Checked and ruled out on the way: the visibility tests (flares only), the dust (no depth writes), x87 `fptan`
+  (pushes 1.0), the inherited-flags scan (no hits on this path), the 1.0/4.0 factor ever being the cube map's for
+  the screen (one frame per run sees a zone value of ~1.27 from `sub_0029C5F0`; not the cause), threads.
+
+So this is the console's behaviour, not an emulation fault, as far as the code shows. Not proven at the user's
+exact spot.
+
+Knob (`patch_gen.py` + `recomp_tree_lod_scale()` in `src/recomp_manual.c`): `RECOMP_TREE_DETAIL=<n>` divides the
+threshold where the culls read it (the five group culls and the per-tree cull in `sub_0010F0D0`), so groups stay
+until they are n times smaller. Default 1 = console. With 4 on the scripted SS1 drive: 1079 tree objects drawn
+over the run instead of 835, queue 193 instead of 175, 58 flips/s instead of 65. `patch_gen.py` entries can now give
+an expected count for identical sites (`(anchor, replacement, n)`).
+
+How found: a RAM scan for the foliage vertices (they are in the pushbuffer), `RECOMP_WATCH` on the pushbuffer and
+then on a render-queue bucket's end pointer for the call chains, temporary prints in the generated code (queue,
+candidates, cull results, view factors). New toolkit knob: `RECOMP_WATCH_AFTER=<s>` arms `RECOMP_WATCH` that many
+seconds after start (a watched heap page that is busy during boot otherwise crawls).
 
 ## Next
 

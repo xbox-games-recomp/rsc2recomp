@@ -2008,7 +2008,7 @@ index 8acb0af..3d2a7e8 100644
  
  #endif
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index b723a92..dd71588 100644
+index b723a92..4c3e6eb 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -1554,14 +1554,26 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
@@ -2086,7 +2086,36 @@ index b723a92..dd71588 100644
          Sleep(0);  /* yield; the waiter is spinning on another core */
      }
      return 0;
-@@ -4089,7 +4117,9 @@ static void contig_report(const char *what, uint32_t va, uint32_t pages)
+@@ -2225,6 +2253,17 @@ static int watch_resolve(uint32_t *out)
+ }
+ 
+ static int watch_arm(uint32_t va);
++/* RECOMP_WATCH_AFTER=<seconds>: arm the trap that long after start. A dword on
++ * a busy heap page (a per-frame render queue) faults on every write to the
++ * page from boot on and crawls; armed once the scene of interest is running
++ * it only costs while it matters. */
++static DWORD WINAPI watch_delayed(LPVOID unused)
++{
++    (void)unused;
++    Sleep(1000u * (DWORD)atoi(getenv("RECOMP_WATCH_AFTER")));
++    watch_arm(g_watch_root + g_watch_off);
++    return 0;
++}
+ 
+ /* Poll until the chain resolves, then arm. Twenty milliseconds, because the
+  * object appears once during bring-up and never again -- this thread exists
+@@ -2269,6 +2308,10 @@ void xbox_WatchInit(void)
+         CloseHandle(CreateThread(NULL, 0, watch_resolver, NULL, 0, NULL));
+         return;
+     }
++    if (getenv("RECOMP_WATCH_AFTER")) {
++        CloseHandle(CreateThread(NULL, 0, watch_delayed, NULL, 0, NULL));
++        return;
++    }
+     watch_arm(g_watch_root + g_watch_off);
+ }
+ 
+@@ -4089,7 +4132,9 @@ static void contig_report(const char *what, uint32_t va, uint32_t pages)
  
      if (!g_contig_t0)
          g_contig_t0 = GetTickCount();

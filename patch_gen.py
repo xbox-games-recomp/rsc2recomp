@@ -15,19 +15,33 @@ PATCHES=[
  # neighbouring texture. NOTES 15.
  ('loc_0023C932: ;\n    ecx = MEM32(edi + 0x6A4);\n    ecx = ecx << 0xA;\n',
   'loc_0023C932: ;\n    ecx = MEM32(edi + 0x6A4); /* patch_gen: bytes, not KB (NOTES 15) */\n'),
+
+ # Tree draw distance (RECOMP_TREE_DETAIL, src/recomp_manual.c): the tree system's size threshold
+ # ([0x4947D0 + 0x8108] = 0x49C8D8; 0.02, then the track's value, stored by the loader) is divided
+ # by the knob where the culls read it: the five group culls (0x2AF9B0, 0x2B0A30 and the like, all
+ # `threshold * factor`) and the per-tree cull 0x10F0D0. Default 1 = the console's. NOTES 23.
+ ('    xmm1.f[0] = xmm1.f[0] * MEMF(0x49C8D8); /* mulss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm1.f[0] = xmm1.f[0] * (MEMF(0x49C8D8) * recomp_tree_lod_scale()); } /* patch_gen: NOTES 23 */\n', 5),
+ ('    xmm5 = XMM_SCALAR(MEMF(ecx + 0x8108)); /* movss */\n',
+  '    { extern float recomp_tree_lod_scale(void); xmm5 = XMM_SCALAR(MEMF(ecx + 0x8108) * recomp_tree_lod_scale()); } /* patch_gen: NOTES 23 */\n'),
 ]
 files=sorted(glob.glob(GEN+'recomp_*.c'))
 ok=True
-for anchor,repl in PATCHES:
+for patch in PATCHES:
+    # (anchor, replacement[, n]): the anchor must occur exactly n times (default 1) over all
+    # files; n > 1 is for identical sites, every one of which is replaced.
+    anchor,repl=patch[0],patch[1]
+    want=patch[2] if len(patch)>2 else 1
     hits=[]
     for f in files:
         t=open(f,encoding='utf-8',errors='surrogateescape',newline='').read()
         a=anchor.replace('\n','\r\n') if '\r\n' in t[:2000] else anchor
         r=repl.replace('\n','\r\n') if '\r\n' in t[:2000] else repl
-        if a in t: hits.append((f,t,a,r))
-    if len(hits)!=1:
-        print('PATCH ANCHOR FOUND IN',len(hits),'FILES:',anchor.splitlines()[0]); ok=False; continue
-    f,t,a,r=hits[0]
-    open(f,'w',encoding='utf-8',errors='surrogateescape',newline='').write(t.replace(a,r,1))
-    print('patched',f.split('/')[-1])
+        if a in t: hits.append((f,t,a,r,t.count(a)))
+    n=sum(h[4] for h in hits)
+    if n!=want:
+        print('PATCH ANCHOR FOUND',n,'TIMES (WANT',want,'):',anchor.splitlines()[0]); ok=False; continue
+    for f,t,a,r,_ in hits:
+        open(f,'w',encoding='utf-8',errors='surrogateescape',newline='').write(t.replace(a,r))
+        print('patched',f.split('/')[-1])
 sys.exit(0 if ok else 1)

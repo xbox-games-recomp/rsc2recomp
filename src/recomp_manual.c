@@ -954,3 +954,21 @@ void recomp_unimpl(const char *text, uint32_t va)
     }
     if (stop) abort();
 }
+
+/* ── Tree draw distance (patch_gen.py, NOTES 23) ─────────────────────────
+ *
+ * RSC2 drops a whole group of distant trees once its projected size falls
+ * under the tree system's threshold (0.02, or the track's own value), so a
+ * group near that size pops out and back as the camera moves. The patched
+ * stores divide the threshold by RECOMP_TREE_DETAIL: 1 (the default) is the
+ * console, 4 keeps groups to a quarter of that size. */
+float recomp_tree_lod_scale(void)
+{
+    static float scale = -1.0f;
+    if (scale < 0.0f) {
+        const char *e = getenv("RECOMP_TREE_DETAIL");
+        float d = e ? (float)atof(e) : 1.0f;
+        scale = d > 0.0f ? 1.0f / d : 1.0f;
+    }
+    return scale;
+}
