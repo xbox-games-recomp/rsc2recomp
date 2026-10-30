@@ -615,6 +615,18 @@ then on a render-queue bucket's end pointer for the call chains, temporary print
 candidates, cull results, view factors). New toolkit knob: `RECOMP_WATCH_AFTER=<s>` arms `RECOMP_WATCH` that many
 seconds after start (a watched heap page that is busy during boot otherwise crawls).
 
+**User (2026-10-29): still drops at 4x** (`flicker\20261029_192355` 66-92): the distant band of trees at the end
+of the road goes when the car rolls back a few metres and returns when it rolls forward. That is the trees'
+**far plane**, not the size test: the cull frustum (`sub_00273E70` at `0x2741D0`) ends at (0.2 + 1) * the zone's
+view distance (`[0x3DF758]` = 0.2, `[view + 0x24268]` from the zone record), about 525-533 units on SS1 (logged
+frustum planes). The foliage fog cannot hide the cut: linear fog to 900 units (params 2, -1/900), but the
+foliage programme writes `oFog = min(depth, c[4].x)` with `c[4].x` = 765, so trees are at most 85% fogged, and
+about 40% at 530. Same code and data as the console, so the console shows the same pop.
+
+`RECOMP_TREE_DETAIL` now also multiplies that far distance (fourth `patch_gen.py` entry): 4 gives a tree frustum
+about 2060 units deep (logged), 58.7 flips/s on the scripted drive; the countdown frame shows the tree line along
+the road running on to the vanishing point (`frames\sn` vs `frames\f4`, f00051). Launcher help text updated.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
