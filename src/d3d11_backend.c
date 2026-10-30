@@ -470,6 +470,7 @@ typedef struct {
     uint32_t hash;
     ID3D11ShaderResourceView *srv;
     uint64_t last_used;
+    uint64_t checked_flip;      /* s_flip_count + 1 when its bytes were last hashed */
     uint32_t redecodes;         /* times its guest bytes changed (log only) */
 } TexEntry;
 
@@ -535,6 +536,8 @@ static ZB s_zb[MAX_ZB];
 static int s_zb_n;
 static TexEntry s_tex[MAX_TEX];
 static int s_tex_n;
+static int s_tex_slot[4096];    /* index + 1 into s_tex by tex_key(); a hint, checked on use */
+#define tex_key(t) (((t)->offset >> 6 ^ (t)->offset >> 18 ^ (t)->width * 31u ^ (t)->height * 131u ^ (t)->color * 7u) & 4095u)
 
 /* Cached state objects, keyed by the raw state words they were built from. */
 typedef struct { uint32_t key[12]; void *obj; } StateEntry;
@@ -1219,16 +1222,41 @@ static ID3D11ShaderResourceView *get_texture(const Nv2aTexture *t)
             bytes = nv2a_backend_cube_face_stride(&l0);
         }
     }
+    {
+        /* Find the cache entry through a slot index, and hash its guest bytes once per
+         * flip rather than at every bind. At tree detail 4 RSC2 binds ~2500 textures a
+         * frame; the linear search over ~600 entries plus a hash of up to 2048 scattered
+         * words each took ~4.7 ms of a ~25 ms frame. A texture the CPU rewrites mid-frame
+         * now shows from the next frame; P8 textures, whose CLUT can change between
+         * draws, are still hashed at every bind. RECOMP_D3D11_TEXCHECK=draw: all of them
+         * are. NOTES 27. */
+        static int per_draw = -1;
+        uint32_t k = tex_key(t);
+        int j = s_tex_slot[k] - 1;
+        if (per_draw < 0) { const char *te = getenv("RECOMP_D3D11_TEXCHECK"); per_draw = te && !strcmp(te, "draw"); }
+        if (j >= 0 && j < s_tex_n) {
+            TexEntry *c = &s_tex[j];
+            if (c->offset == t->offset && c->w == t->width && c->h == t->height
+                && c->color == t->color && c->pitch == t->pitch) e = c;
+        }
+        if (!e) {
+            for (i = 0; i < s_tex_n; i++) {
+                TexEntry *c = &s_tex[i];
+                if (c->offset == t->offset && c->w == t->width && c->h == t->height
+                    && c->color == t->color && c->pitch == t->pitch) { e = c; s_tex_slot[k] = i + 1; break; }
+            }
+        }
+        if (e && e->srv && !per_draw && t->color != 0x0B && e->checked_flip == s_flip_count + 1) {
+            e->last_used = s_draw_count;
+            return e->srv;
+        }
+    }
     hash = guest_hash(t->offset, bytes);
     if (t->color == 0x0B && t->palette)          /* P8: a new CLUT is a new texture */
         hash = hash * 16777619u ^ guest_hash(t->palette, 1024);
-    for (i = 0; i < s_tex_n; i++) {
-        TexEntry *c = &s_tex[i];
-        if (c->offset == t->offset && c->w == t->width && c->h == t->height
-            && c->color == t->color && c->pitch == t->pitch) { e = c; break; }
-    }
     if (e && e->hash == hash && e->srv) {
         e->last_used = s_draw_count;
+        e->checked_flip = s_flip_count + 1;
         return e->srv;
     }
 
@@ -1327,6 +1355,8 @@ static ID3D11ShaderResourceView *get_texture(const Nv2aTexture *t)
     e->offset = t->offset; e->w = t->width; e->h = t->height; e->color = t->color;
     e->pitch = t->pitch; e->levels = t->levels; e->hash = hash; e->srv = srv;
     e->last_used = s_draw_count;
+    e->checked_flip = s_flip_count + 1;
+    s_tex_slot[tex_key(t)] = (int)(e - s_tex) + 1;
     s_hd_us += qpc_us() - t_us; s_hd_n++; s_hd_bytes += (uint64_t)t->width * t->height * 4;
     return srv;
 }

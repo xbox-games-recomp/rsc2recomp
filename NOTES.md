@@ -719,6 +719,32 @@ Fix (`patch_gen.py`, `src/recomp_manual.c`): `recomp_tree_fade_scale()` (RECOMP_
 multiplies both reads of `[cam + 0x14]` in `sub_0010F0D0`. `recomp_tree_model_scale()` (RECOMP_TREE_MODEL) now
 defaults to 1, the console's model distance. Launcher help text back to "draws them further".
 
+## 27. Frame rate: texture lookups hashed once per flip (back end fix)
+
+Timed inside a frame at tree detail 4 (bench as in 26, RES 2, vsync off; temporary timers, since removed):
+~20-25 ms per flip, of which `be_draw_ext` 7.5 ms, and 4.7 ms of that in `get_texture` (~2500 binds a flip,
+~1.9 us each). Each bind searched the ~600-entry texture cache linearly and hashed up to 2048 scattered words of
+the texture's guest memory to catch CPU writes.
+
+Fix (`d3d11_backend.c`): a 4096-slot index finds the cache entry (checked, falls back to the search), and a
+texture's bytes are hashed once per flip (`checked_flip`); later binds in the same flip reuse the entry. A
+texture the CPU rewrites mid-frame shows from the next frame. P8 textures (CLUT can change between draws) are
+still hashed at every bind; `RECOMP_D3D11_TEXCHECK=draw` restores the old check for all.
+
+| build (bench, vsync off) | 4x flips/s | 1x flips/s |
+|---|---|---|
+| 26 | 41 / 45 | 56 / 64 |
+| 27 | 51 / 57 | 69 / 76 |
+
+4x with vsync on: 51 / 56. `get_texture` is now ~1 ms a flip.
+
+Where the rest goes at 4x (~17 ms): the executor's vertex gather in `raster_batch_vsh_gpu` (~7 ms: ~320,000
+vertices a frame read from guest memory and written out as float4 attributes; reading each attribute's range
+once per batch instead of per vertex changed nothing, so it is the data volume), the back end flush (~4 ms) and
+the draw (~3.7 ms). The game thread spends ~80% of a frame in `sub_003683A0`, D3D spinning on a GPU status
+register until the executor is idle. Next step would be caching converted static geometry across frames. The
+game-thread sampler (`RECOMP_SAMPLE`) names toolkit functions unreliably (folded/static symbols).
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
