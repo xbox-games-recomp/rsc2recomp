@@ -431,6 +431,7 @@ dark backdrop behind the arches there looked like tyres, which sent the search a
 **Car-shadow quads with inf texture coordinates.** The shadow quads (vsh `20DD05E9`, inline `DrawPrimitiveUP`
 data written by the game's CPU code) carry `-inf/inf` texture coordinates for two of the four cars (`attr range ...
 NONFINITE` in the batch log). Not looked at further; it may be an off-screen car's projection and harmless.
+Not harmless: the shadow corners were placed by a mis-lifted ray test (`ffreep`). Fixed in 31.
 
 **Terrain vanishing for 10-20 frames (user report).** Not reproduced in ~10 race runs. Ruled out: dropped batches
 (FRAMESTATS `d` always 0), a sudden triangle-count drop (`RECOMP_D3D11_DROPDUMP=50`: only the loading screen fired),
@@ -842,6 +843,58 @@ Profiling: `RECOMP_SAMPLE=exec` samples the flipping thread (executor + back end
 an inclusive table; `RECOMP_SAMPLE_SKIP=<s>` drops the first s seconds, `RECOMP_SAMPLE_SECS=<s>` sets the report
 interval (default 60), and stacks show up to four guest frames. The toolkit's `xbox_kernel` now builds with `/Zi`
 (CMakeLists.txt), so its static functions have names (before: nearest public symbol, e.g. "xbox_WatchdogStart").
+
+## 31. Car shadows cast wrong for a frame: `ffreep` was lifted as nothing (toolkit lifter fix)
+
+User report: car shadows sometimes look wrong for 1-2 frames (`flicker\20261031_111135`, frames 177 and 206,
+bonnet camera, 3-AI race start). In each bad frame a large soft dark wedge runs from under the player's car up the
+road towards the horizon (right half of the road in 177, most of the road in 206). In the frames on either side
+the road is lit, and draw and triangle counts are the same, so the wedge is a normal draw with bad geometry, not
+an extra draw. A scripted crossover race reproduced it (`frames\sh2` f00300: a thin wedge from the car up to the
+left for one flip).
+
+The shadow is one multiply-blended quad per car (vsh `20DD05E9`, blend DST_COLOR/ZERO, 4 textures), whose
+vertices the game builds in `sub_00277860` and sends with `DrawVerticesUP` (call at `0x2796AE`). Per car it
+casts a vertical ray at each of four points under the car into the ground (`sub_000C6D70` -> `sub_000C6710`,
+the terrain grid), fits two planes through the hits, and puts each shadow corner on them. UVs and corner
+alpha come from how far a corner sits from the plane. Logged per flip, the quads kept the car's 4.3 x 1.9
+footprint in x/z while the corner heights jumped by metres from flip to flip, even with the cars still on the
+grid. Two corners over the same flat triangle, at the same start height, came back 1.78 and 5.10 units down.
+19's `-inf/inf` UVs are the same fault. A corner thrown far enough lifts the quad across the camera: the wedge.
+
+Cause: the ray-vs-triangle routine `sub_00221D20` (and its twin `sub_00221E70`) ends a range check with
+`fldz; fcomip st(2); seta ah; fld1; fcomip st(1); setb al; or al, ah; ffreep st(0); fstp [esp+0x30]`. The
+lifter had no case for `ffreep`, so it became the comment `/* FPU: ffreep st(0) */`. Without the pop, the
+`fstp` stored `u+v` instead of `v`, and the height calculation after it read every x87 slot one off: it
+multiplied by `v` where the code means `1/det`. The result is wrong but deterministic (two calls with the same
+inputs agree), so it was neither a race nor stale state. Only one thread calls the query, and calls never
+overlap. `sub_000C3330`, a second ground query (called at `0xC66B3`), uses the same routine.
+
+Fix (toolkit `tools/recomp/lifter.py`, test `test_lifter_ffreep.py`): `ffreep` lifts to `fp_pop()`; `ffree`
+stays a no-op because tags are not modelled. These were the only three `ffreep` sites in RSC2.
+Other x87 instructions still lifted as comments, not looked at: `fxtract` (`sub_000917F0`), `fnclex` (x2),
+and `fnsave`/`frstor` (`sub_000A16BC`).
+
+Verified (crossover race, 16 s burst, every flip; `sh3` before, `sh9` after):
+
+| | before | after |
+|---|---|---|
+| corner-height spread over a car (median / p99 / max) | 4.9 / 9.1 / 11.8 | 0.10 / 0.81 / 1.0 |
+| non-finite shadow UV components | 6216 | 0 |
+| quads that jump away from both neighbouring flips | 31 | 0 |
+
+The burst frames have no wedge, and shadows sit under the cars. Not checked at the user's spot (bonnet camera,
+their track); needs the user to confirm there.
+
+Frame rate (RES 2, tree detail 4, vsync off): Pro SS1 bench (as in 28) 67.5-67.9 flips/s, and ice racing
+(`rx_long`, as in 30) 11.5 ms over the last 1500 flips (that drive averaged 616 draws). One exe with the pop
+switchable at run time gave 14.63 ms (fixed) and 14.60 ms (old) per start-line flip. `sub_00221D20` runs
+~850 times a second. The ~0.4 ms gap between two separate builds (69.6-70.0 flips/s with the pop edited out)
+was the builds themselves, not the fix.
+
+How found: per-flip logs of the shadow quads' vertices, then `DrawVerticesUP`'s return address, then probes in
+the generated code: the ray hits and distances, a re-call of the query with the same inputs, and a
+thread/overlap check on `sub_000C6710`. The probes have been removed.
 
 ## Next
 

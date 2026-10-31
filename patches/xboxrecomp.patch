@@ -2288,3 +2288,69 @@ index 748d2a0..b30a50d 100644
  
          return sections
  
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index 25970d2..919bda3 100644
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -4000,6 +4000,15 @@ class Lifter:
+             return [f"fp_push(0.0); /* fldz */"]
+         if m == "fld1":
+             return [f"fp_push(1.0); /* fld1 */"]
++        if m in ("ffree", "ffreep"):
++            # FFREE marks st(i) empty; FFREEP does that and then pops. Tags are
++            # not modelled, so FFREE changes nothing we track and FFREEP is a
++            # plain pop. MSVC ends an fcomip/setcc sequence with `ffreep st(0)`
++            # to drop an operand: left out (it was a comment), every later
++            # stack slot was one off, and the next fstp stored the wrong value.
++            if m == "ffreep":
++                return [f"fp_pop(); /* ffreep {insn.op_str} */"]
++            return [f"/* ffree {insn.op_str}: tags not modelled */"]
+ 
+         if m in _FCMOV_JCC:
+             # Reached only when lift_basic_block had no tracked flag setter
+diff --git a/tools/recomp/test_lifter_ffreep.py b/tools/recomp/test_lifter_ffreep.py
+new file mode 100644
+index 0000000..bb616f2
+--- /dev/null
++++ b/tools/recomp/test_lifter_ffreep.py
+@@ -0,0 +1,40 @@
++"""FFREEP must pop the x87 stack.
++
++It had no case in _lift_fpu and fell through to the bare-comment catch-all.
++MSVC ends a pair of range checks with it:
++
++    fldz / fcomip st(2) / seta ah / fld1 / fcomip st(1) / setb al
++    or al, ah / ffreep st(0) / fstp dword ptr [esp + 0x30]
++
++With the pop missing, the fstp stored the operand above the one the code
++meant, and every stack slot read after it was one off. In RalliSport
++Challenge 2 that is the vertical ray against a ground triangle, so the car
++shadows were drawn at the wrong height.
++"""
++import unittest
++
++from .disasm import Instruction
++from .lifter import Lifter
++
++
++def _lift(mnemonic, op_str):
++    instruction = Instruction(0, 2, mnemonic, op_str, "")
++    instruction.operands = []
++    return Lifter().lift_instruction(instruction)
++
++
++class FfreepLiftTest(unittest.TestCase):
++    def test_ffreep_pops(self):
++        lifted = "\n".join(_lift("ffreep", "st(0)"))
++        self.assertIn("fp_pop();", lifted)
++        self.assertNotIn("/* FPU:", lifted)
++
++    def test_ffree_leaves_the_stack_alone(self):
++        """FFREE only tags a register empty, and tags are not modelled."""
++        lifted = "\n".join(_lift("ffree", "st(3)"))
++        self.assertNotIn("fp_pop", lifted)
++        self.assertNotIn("/* FPU:", lifted)
++
++
++if __name__ == "__main__":
++    unittest.main()
