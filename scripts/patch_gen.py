@@ -93,6 +93,10 @@ PATCHES=[
  # knob skips that store for human players, so they can drive anywhere. NOTES 32.
  ('loc_0025925A: ;\n    xmm0 = xmm3; /* movaps */\n',
   'loc_0025925A: ;\n    { extern int recomp_oob_recovery_skip(uint32_t); if (recomp_oob_recovery_skip(ebp)) goto loc_00259287; } /* patch_gen: NOTES 32 */\n    xmm0 = xmm3; /* movaps */\n'),
+ # ... and the rest of the check: past a nearer limit it sets the car controller's "far off" flag
+ # [ctrl + 0x1EED], which switches the camera to a fixed one (mode 0xD) until the car comes back. NOTES 32.
+ ('loc_00259287: ;\n    _fca = xmm3.f[0]; _fcb = xmm4.f[0]; /* comiss */\n',
+  'loc_00259287: ;\n    { extern int recomp_oob_free(uint32_t); if (recomp_oob_free(ebp)) goto loc_002592D8; } /* patch_gen: NOTES 32 */\n    _fca = xmm3.f[0]; _fcb = xmm4.f[0]; /* comiss */\n'),
 ]
 files=sorted(glob.glob(GEN+'recomp_*.c'))
 ok=True

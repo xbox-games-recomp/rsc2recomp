@@ -913,13 +913,21 @@ player's per-frame update; all three of its resets call `sub_00259E30`, which pu
 | Network | `+0x872` with the network flag `0x466AED` | direct |
 
 A human player pinned against the pipe wall for a minute was never reset, so there is no stuck or upside-down
-recovery for people; the Car Reset button is theirs. Past a nearer limit (0.5 A, or the segment's) the check also
-sets controller `+0x1EED` (cleared again 0.5 inside); not looked at, left alone.
+recovery for people; the Car Reset button is theirs.
+
+**Fixed off-track camera.** Past a nearer limit (0.5 A, or the segment's other pair, `+0x34`/`+0x38`) the same check
+sets the controller's "far off" flag `+0x1EED`, cleared again 0.5 inside. While it is set, the camera-mode getters
+(`sub_00257490`, the copy at `0x15CA51`, `0x27C45B`) answer mode 0xD, and `0x25DBF1` copies the current camera
+into the fixed camera at controller `+0x1BD8` and makes it the active one: the view stays where it was and the car
+drives away from it. On Cooper Hill's first bend the camera limit is ~13-14 units from the ribbon and the
+reset limit ~19-22 (left side; 30 / 45 on the right).
 
 Fix: `patch_gen.py` puts a call to `recomp_oob_recovery_skip(player)` (`recomp_manual.c`) at `loc_0025925A`, just
 before the pending-flag store, and jumps past it when that returns 1: `RECOMP_NO_OOB_RECOVERY=1` and a human
-player (`+0x82C` == 0). The first skip logs `[OOB] car off the track: automatic recovery skipped`. AI and the
-Car Reset button are untouched. Launcher: **Gameplay -> Allow driving out of bounds (no auto-recovery)**, off by
+player (`+0x82C` == 0). The first skip logs `[OOB] car off the track: automatic recovery skipped`. A second anchor
+at `loc_00259287` (`recomp_oob_free(player)`, same test, no log) jumps to the function's exit before the far-off
+flag, so the chase camera stays on the car (added after the user saw the camera park off-track). AI and the Car
+Reset button are untouched. Launcher: **Gameplay -> Allow driving out of bounds (no auto-recovery)**, off by
 default, saved in `launcher.user.ini` like the other settings.
 
 Verified (Career -> Pro SS1, Cooper Hill I, scripted drive into the pipe wall on the first bend, frames every
@@ -931,6 +939,11 @@ a helper thread, which was then removed:
 |---|---|
 | off | fade to black 1-2 s after hitting the wall, car back on the road pointing down it; again when it hit the wall a second time |
 | on | `[OOB]` line in the log, no fade, the car stays at the wall for the remaining 25 s |
+
+Camera, the same drive with the real allowance and a test-only build that scaled the segment's camera limit by 0.25
+(~3.5; the car at the wall is ~4.8 away, inside the reset limit) and logged the flag: off, the flag goes to 1 and the
+view parks behind, the car small in the distance at the wall; on, the flag stays 0 and the chase camera stays
+behind the car. The test code was removed.
 
 Not checked: driving beyond the real limit with the flag on, so what is out there (terrain edge, falling) is not
 known. The Car Reset button was not seen to work in the scripted runs (Back, X, Y, B, White, both thumbs and the
