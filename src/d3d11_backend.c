@@ -1364,7 +1364,7 @@ static ID3D11ShaderResourceView *get_texture(const Nv2aTexture *t)
 /* A cube map as a six-slice array (NV2A face order +X -X +Y -Y +Z -Z; the
  * shader picks the face itself, as the executor's rc_stage_fetch does). */
 #define MAX_CUBE 32
-static struct { uint32_t offset, w, color, hash; ID3D11ShaderResourceView *srv; } s_cube[MAX_CUBE];
+static struct { uint32_t offset, w, color, stride, hash; ID3D11ShaderResourceView *srv; } s_cube[MAX_CUBE];
 static int s_cube_n, s_cube_next;
 
 static ID3D11ShaderResourceView *get_cube_texture(const Nv2aTexture *t)
@@ -1382,8 +1382,11 @@ static ID3D11ShaderResourceView *get_cube_texture(const Nv2aTexture *t)
         return NULL;
     stride = nv2a_backend_cube_face_stride(t);
     hash = guest_hash(t->offset, stride * 6u);
+    /* Keyed by the face stride too: RSC2's ice tracks bind one DXT5 cube both with 1 and
+     * with 7 levels, and with one entry for both every bind re-decoded all six faces. */
     for (i = 0; i < (uint32_t)s_cube_n; i++)
-        if (s_cube[i].offset == t->offset && s_cube[i].w == t->width && s_cube[i].color == t->color) {
+        if (s_cube[i].offset == t->offset && s_cube[i].w == t->width && s_cube[i].color == t->color
+            && s_cube[i].stride == stride) {
             if (s_cube[i].hash == hash && s_cube[i].srv)
                 return s_cube[i].srv;
             slot = (int)i;
@@ -1455,7 +1458,7 @@ static ID3D11ShaderResourceView *get_cube_texture(const Nv2aTexture *t)
     }
     if (s_cube[slot].srv) ID3D11ShaderResourceView_Release(s_cube[slot].srv);
     s_cube[slot].offset = t->offset; s_cube[slot].w = t->width; s_cube[slot].color = t->color;
-    s_cube[slot].hash = hash; s_cube[slot].srv = srv;
+    s_cube[slot].stride = stride; s_cube[slot].hash = hash; s_cube[slot].srv = srv;
     s_hd_us += qpc_us() - t_us; s_hd_n++; s_hd_bytes += (uint64_t)t->width * t->width * 24;
     return srv;
 }
@@ -4123,7 +4126,7 @@ static RT *memory_frame(void)
  * the whole queue ~28 times per race flip (42 flips/s with ~140 frames over
  * 33 ms in a 48 s drive, against 160 without the wait). RECOMP_ZPASS_SYNC=1
  * makes the executor use the waiting pair again. */
-#define ZQ_POOL 256
+#define ZQ_POOL 4096        /* a few frames of tests: a full pool waits for the GPU */
 static ID3D11Query *s_zq[ZQ_POOL];
 static unsigned char s_zq_busy[ZQ_POOL];
 static int s_zq_open = -1, s_zq_next;

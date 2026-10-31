@@ -9,6 +9,10 @@
  * samples go to the "slow" or the "normal" table. Every 60 s the top
  * functions of both tables are printed as [SAMPLE] lines, resolved through
  * the PDB (generated functions are sub_<guest address>).
+ *
+ * RECOMP_SAMPLE=exec samples the thread that flips instead (the push-buffer
+ * executor and the render back end), and the report adds an inclusive
+ * table: each function counted once per sample it is anywhere on the stack.
  */
 #include <windows.h>
 #include <dbghelp.h>
@@ -29,7 +33,8 @@ static HANDLE s_target;
 static DWORD64 s_frame_pc[FRAME_MAX], s_frame_caller[FRAME_MAX], s_frame_stack[FRAME_MAX][DEPTH];
 static int s_frame_n;
 static uint32_t s_slow_frames, s_normal_frames, s_slow_ms;
-static volatile LONG s_on;
+static ULONGLONG s_skip_until;    /* RECOMP_SAMPLE_SKIP=<s>: drop the first s seconds (boot, menus) */
+static volatile LONG s_on, s_exec;
 
 /* Keyed by pc, caller and the deeper stack, so one leaf reached two ways stays two entries. */
 static SampleEntry *tab_get(DWORD64 pc, DWORD64 caller, const DWORD64 *stack)
@@ -107,7 +112,10 @@ static void report(void)
                 && strstr(nm, "File") == NULL && strstr(nm, "0x") == NULL && nm[0] != '0') {
                 strncat(via, nm, sizeof via - strlen(via) - 2); strncat(via, " ", 2); got_host = 1;
             }
-            if (!strncmp(nm, "sub_", 4)) { strncat(via, nm, sizeof via - strlen(via) - 1); break; }
+            if (!strncmp(nm, "sub_", 4)) {      /* three guest frames: a wrapper's caller says more */
+                strncat(via, nm, sizeof via - strlen(via) - 2); strncat(via, " ", 2);
+                if (++got_host > 3) break;
+            }
         }
         for (j = 0; j < na; j++)
             if (!strcmp(agg[j].fn, fn) && !strcmp(agg[j].caller, cl) && !strcmp(agg[j].via, via)) break;
@@ -129,6 +137,32 @@ static void report(void)
         fprintf(stderr, "[SAMPLE] (normal top) normal %5.1f%% slow %5.1f%%  %s <- %s\n",
                 tot_normal ? 100.0 * agg[i].normal / tot_normal : 0.0,
                 tot_slow ? 100.0 * agg[i].slow / tot_slow : 0.0, agg[i].fn, agg[i].caller);
+    if (s_exec) {
+        /* Inclusive: every function on a sample's stack, once per sample. */
+        na = 0;
+        memset(agg, 0, 8192 * sizeof(Agg));
+        for (i = 0; i < TAB_SIZE; i++) {
+            char seen[DEPTH + 1][96];
+            int ns = 0, k, q;
+            if (!copy[i].pc) continue;
+            for (k = -1; k < DEPTH; k++) {
+                DWORD64 a = k < 0 ? copy[i].pc : copy[i].stack[k];
+                if (!a) break;
+                name_of(a, seen[ns], sizeof seen[ns]);
+                for (q = 0; q < ns; q++) if (!strcmp(seen[q], seen[ns])) break;
+                if (q < ns) continue;
+                for (j = 0; j < na; j++) if (!strcmp(agg[j].fn, seen[ns])) break;
+                if (j == na) { if (na == 8192) continue; strcpy(agg[na].fn, seen[ns]); na++; }
+                agg[j].slow += copy[i].slow; agg[j].normal += copy[i].normal;
+                ns++;
+            }
+        }
+        qsort(agg, na, sizeof *agg, cmp_normal);
+        for (i = 0; i < na && i < 40; i++)
+            fprintf(stderr, "[SAMPLE] (inclusive) normal %5.1f%% slow %5.1f%%  %s\n",
+                    tot_normal ? 100.0 * agg[i].normal / tot_normal : 0.0,
+                    tot_slow ? 100.0 * agg[i].slow / tot_slow : 0.0, agg[i].fn);
+    }
     fflush(stderr);
     free(agg);
     free(copy);
@@ -136,7 +170,9 @@ static void report(void)
 
 static DWORD WINAPI sampler_thread(void *arg)
 {
-    ULONGLONG next_report = GetTickCount64() + 60000;
+    const char *ev = getenv("RECOMP_SAMPLE_SECS");     /* report interval, default 60 s */
+    ULONGLONG every = (ev && atoi(ev) > 0 ? (ULONGLONG)atoi(ev) : 60) * 1000;
+    ULONGLONG next_report = GetTickCount64() + every;
     (void)arg;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     timeBeginPeriod(1);
@@ -146,6 +182,7 @@ static DWORD WINAPI sampler_thread(void *arg)
         int d;
         memset(stack, 0, sizeof stack);
         Sleep(1);
+        if (!s_target) continue;
         if (SuspendThread(s_target) == (DWORD)-1)
             break;
         memset(&ctx, 0, sizeof ctx);
@@ -192,7 +229,7 @@ static DWORD WINAPI sampler_thread(void *arg)
             LeaveCriticalSection(&s_lock);
         }
         if (GetTickCount64() >= next_report) {
-            next_report = GetTickCount64() + 60000;
+            next_report = GetTickCount64() + every;
             report();
         }
     }
@@ -204,6 +241,18 @@ void rsc2_sampler_frame(double ms)
 {
     int i, slow;
     if (!s_on) return;
+    if (s_exec && !s_target) {
+        HANDLE h;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h,
+                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
+        s_target = h;
+    }
+    if (GetTickCount64() < s_skip_until) {
+        EnterCriticalSection(&s_lock);
+        s_frame_n = 0;
+        LeaveCriticalSection(&s_lock);
+        return;
+    }
     slow = ms > (double)s_slow_ms;
     EnterCriticalSection(&s_lock);
     for (i = 0; i < s_frame_n; i++) {
@@ -222,13 +271,17 @@ void rsc2_sampler_start(void)
     const char *sm = getenv("RECOMP_SAMPLE_SLOW_MS");
     if (!e || e[0] == '0') return;
     s_slow_ms = sm ? (uint32_t)atoi(sm) : 45;
+    if (getenv("RECOMP_SAMPLE_SKIP"))
+        s_skip_until = GetTickCount64() + (ULONGLONG)atoi(getenv("RECOMP_SAMPLE_SKIP")) * 1000;
     s_tab = (SampleEntry *)calloc(TAB_SIZE, sizeof(SampleEntry));
     if (!s_tab) return;
     InitializeCriticalSection(&s_lock);
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &s_target,
-                    THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
+    s_exec = !strcmp(e, "exec");
+    if (!s_exec)
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &s_target,
+                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
     InterlockedExchange(&s_on, 1);
     CreateThread(NULL, 0, sampler_thread, NULL, 0, NULL);
     fprintf(stderr, "[SAMPLE] sampling the game thread every 1 ms, slow frame > %u ms\n", s_slow_ms);

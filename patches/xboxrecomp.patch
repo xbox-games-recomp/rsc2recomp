@@ -424,7 +424,7 @@ index 327f01d..00acf44 100644
 +
  #endif /* NV2A_BACKEND_H */
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index a513bc7..6be215e 100644
+index a513bc7..7f186c4 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -305,6 +305,10 @@ static struct {
@@ -749,7 +749,7 @@ index a513bc7..6be215e 100644
  /* One texel at normalised (swizzled/DXT) or texel (linear) coordinates, as
   * floats. An unusable stage reads white, so a missing texture multiplies
   * through instead of blacking the pixel out. */
-@@ -2609,6 +2759,133 @@ static XfTri s_xfq_tris[XF_QUEUE_MAX];
+@@ -2609,6 +2759,144 @@ static XfTri s_xfq_tris[XF_QUEUE_MAX];
  static int s_xfq_n;
  static long s_xfq_px;
  
@@ -763,7 +763,10 @@ index a513bc7..6be215e 100644
 + * running total, so it first waits for the earlier one (s_zq_carry).
 + * RECOMP_ZPASS_SYNC=1 waits at every test instead (zpass_begin/end). */
 +#define ZQ_IDS 8
-+#define ZQ_REPORTS 64
++/* Room for a few frames of reports: a full list waits for the GPU, and RSC2's
++ * night ice tracks (lamp and headlight flares) made ~100 a frame, so a list of
++ * 64 drained the GPU mid-frame, every frame. */
++#define ZQ_REPORTS 1024
 +#define ZQ_NO_SLOT 0xFFFFFFFFu
 +typedef struct {
 +    uint32_t at, sum;           /* report slot (ZQ_NO_SLOT: only free the ids) */
@@ -797,7 +800,9 @@ index a513bc7..6be215e 100644
 +    slot[3] = 0;                        /* done: last, the title polls it */
 +}
 +
-+/* Write every report whose queries have all answered, oldest first. */
++/* Write every report whose queries have all answered, oldest first. The GPU
++ * answers in submission order, so without waiting the walk stops at the first
++ * report still open: polling every later one cost a GetData each per report. */
 +static void zq_drain(int wait, int flush)
 +{
 +    int r, i, keep = 0;
@@ -816,6 +821,12 @@ index a513bc7..6be215e 100644
 +            }
 +        }
 +        if (left) {
++            if (!wait) {
++                if (keep < r)
++                    memmove(&s_zrep[keep], q, (size_t)(s_zrep_n - r) * sizeof *q);
++                keep += s_zrep_n - r;
++                break;
++            }
 +            s_zrep[keep++] = *q;
 +            continue;
 +        }
@@ -883,7 +894,7 @@ index a513bc7..6be215e 100644
  static void xf_queue_flush(void)
  {
      XfCount cnt = {0, 0, 0};
-@@ -2682,9 +2959,10 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2682,9 +2970,10 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      if (backend_draws()) {                     /* a back end rasterises */
          Nv2aVertex *o = backend_slot();
          if (o) {
@@ -897,7 +908,7 @@ index a513bc7..6be215e 100644
              s_bcount += 3;
          }
          return;
-@@ -2927,15 +3205,528 @@ static void xf_set_viewport(void)
+@@ -2927,15 +3216,528 @@ static void xf_set_viewport(void)
      s_xf_o[2] = of[2];
  }
  
@@ -1426,7 +1437,7 @@ index a513bc7..6be215e 100644
      xf_set_viewport();
      {
          const VertexAttr *tc = texcoord_attr();
-@@ -2993,11 +3784,32 @@ static void raster_batch_program(void)
+@@ -2993,11 +3795,32 @@ static void raster_batch_program(void)
          }
          /* Spread out: one every 20000 program batches, so a run that spends
           * its first half in menus still traces the 3D scene. */
@@ -1462,7 +1473,7 @@ index a513bc7..6be215e 100644
              for (i = 0; i < NV_VERTEX_ATTRS; i++) {
                  const VertexAttr *at = &s_gpu.attr[i];
                  if (!at->size)
-@@ -3008,13 +3820,85 @@ static void raster_batch_program(void)
+@@ -3008,13 +3831,85 @@ static void raster_batch_program(void)
                          at->size, at->stride, in[0], in[1], in[2], in[3]);
              }
              {
@@ -1550,7 +1561,7 @@ index a513bc7..6be215e 100644
              for (i = 0; i < 3; i++)
                  fprintf(stderr, "[VTRACE]   out%u pos %g %g %g %g\n", i,
                          s_xf[i].pos[0], s_xf[i].pos[1], s_xf[i].pos[2],
-@@ -3040,8 +3924,14 @@ static void raster_batch_program(void)
+@@ -3040,8 +3935,14 @@ static void raster_batch_program(void)
              raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
          break;
      case NV_PRIM_TRIANGLE_STRIP:
@@ -1567,7 +1578,7 @@ index a513bc7..6be215e 100644
          break;
      case NV_PRIM_TRIANGLE_FAN:
      case NV_PRIM_POLYGON:
-@@ -3065,8 +3955,10 @@ static void raster_batch_program(void)
+@@ -3065,8 +3966,10 @@ static void raster_batch_program(void)
      }
      /* The batch's triangles, all at once (see xf_queue_push). */
      xf_queue_flush();
@@ -1578,7 +1589,7 @@ index a513bc7..6be215e 100644
  }
  
  static void raster_batch(void)
-@@ -3108,9 +4000,14 @@ static void raster_batch(void)
+@@ -3108,9 +4011,14 @@ static void raster_batch(void)
                             vertex_color(s_gpu.idx[i]));
          break;
      case NV_PRIM_TRIANGLE_STRIP:
@@ -1596,7 +1607,7 @@ index a513bc7..6be215e 100644
          break;
      case NV_PRIM_TRIANGLE_FAN:
      case NV_PRIM_POLYGON:
-@@ -3212,8 +4109,14 @@ static void draw_primitive(void)
+@@ -3212,8 +4120,14 @@ static void draw_primitive(void)
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
      s_gpu.draws++;
@@ -1613,7 +1624,7 @@ index a513bc7..6be215e 100644
      s_gpu.verts += s_gpu.idx_count;
  
      /* How many batches carry coordinates at all, and what range they span.
-@@ -3402,6 +4305,9 @@ static void draw_inline_array(void)
+@@ -3402,6 +4316,9 @@ static void draw_inline_array(void)
          case 0:  bytes = 4;                        break;  /* D3DCOLOR   */
          case 2:  bytes = 4 * s_gpu.attr[a].size;   break;  /* float      */
          case 4:  bytes = s_gpu.attr[a].size;       break;  /* ubyte norm */
@@ -1623,7 +1634,7 @@ index a513bc7..6be215e 100644
          default: bytes = 4 * s_gpu.attr[a].size;   break;
          }
          s_gpu.attr[a].offset = off;
-@@ -3912,9 +4818,12 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3912,9 +4829,12 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          s_gpu.rc_seen = 1;
          break;
      case 0x1E70: s_gpu.rc.stage_program = param; break;
@@ -1636,7 +1647,7 @@ index a513bc7..6be215e 100644
      case 0x0300: s_gpu.alpha_test = param; break;
      case 0x033C: s_gpu.alpha_func = param; break;
      case 0x0340: s_gpu.alpha_ref = param; break;
-@@ -3924,9 +4833,19 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3924,9 +4844,19 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case 0x09C0: memcpy(&s_gpu.fog_param[0], &param, 4); break;
      case 0x09C4: memcpy(&s_gpu.fog_param[1], &param, 4); break;
      case 0x17C8:                                  /* CLEAR_REPORT_VALUE */
@@ -1656,7 +1667,7 @@ index a513bc7..6be215e 100644
          s_gpu.zpass_enable = param;
          break;
      case 0x17D0: {                                /* GET_REPORT */
-@@ -3937,12 +4856,25 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3937,12 +4867,25 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
           * 3 culls its world with these, so the race's main view drew only
           * the sky while the cube-map passes, which do not test, drew it all.
           * The report DMA object starts at physical 0 here, as D3D sets it. */
@@ -1686,7 +1697,7 @@ index a513bc7..6be215e 100644
          break;
      }
      case NV097_SET_BLEND_COLOR:
-@@ -4130,6 +5062,8 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -4130,6 +5073,8 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              }
          }
          s_gpu.drawn_stale = 1;

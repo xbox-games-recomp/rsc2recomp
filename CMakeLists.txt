@@ -31,6 +31,10 @@ set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xboxrecomp" CACHE PATH
 # Add xboxrecomp as a subdirectory -- this builds all 6 runtime libraries
 # and provides the 'xboxrecomp' umbrella target to link against.
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
+# Debug info for the executor and back-end statics, so profilers (RECOMP_SAMPLE) name them.
+if(MSVC)
+    target_compile_options(xbox_kernel PRIVATE /Zi)
+endif()
 
 # ── Recompiled game executable ──────────────────────────────────
 

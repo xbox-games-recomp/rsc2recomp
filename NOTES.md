@@ -802,6 +802,47 @@ Fix: `recomp_tree_model_scale()` now defaults to the square root of RECOMP_TREE_
 
 User check with `RECOMP_TREE_MODEL=2`: the trees stay and it holds 60 fps or more.
 
+## 30. Races with 3 AI (ice racing): visibility-test stalls and a cube map decoded every frame (toolkit + back end)
+
+User report: 20-25 fps in rallycross and ice racing with 3 opponents. Route: Main -> left, A (SINGLE RACE) -> RACE
+TYPE (cursor starts on CROSSOVER: left = RALLYCROSS, right x3 = ICERACING) -> A (first track) -> A (RACE SETTINGS:
+3 laps, 3 AI) -> A (CAR) -> A (START RACE). Bench (RES 2, tree detail 4, vsync off, hidden window, ~45 s of throttle
+with steering pulses; frame times from `RECOMP_D3D11_HITCH=0`):
+
+| race | before | after |
+|---|---|---|
+| Ice racing, Canada / Lodge (night), last 1500 flips | 25.1 ms (40 fps), 1176 draws | 14.4 ms (69 fps), 941 draws |
+| ice, views of ~1250 draws | 32-36 fps | 63-68 fps |
+| Rallycross, USA / Pretzel (day), last 1500 flips | 12.9 ms, 805 draws | 10.2 ms, 511 draws (same route; not affected) |
+| Pro SS1 (solo), bench as in 28 | 66 / 66 flips/s | 70 / 69 |
+
+Profiled with the sampler's new executor mode (`RECOMP_SAMPLE=exec`, below). In the ice race the executor spent
+~27% of its time in `zq_drain` -> `be_zq_poll` (`GetData`), ~15% re-decoding a cube map, ~31% on draws, ~21% idle.
+
+- **Visibility tests.** The night track's lamp and headlight flares make ~100-140 reports a frame. The executor kept at most 64 pending reports (22) and on a full list waited for the GPU to finish
+  everything: about once a frame (40-80 waits/s), so CPU and GPU stopped overlapping. Also every GET_REPORT polled
+  every pending report. Now `ZQ_REPORTS` is 1024 (`nv2a_pb_exec.c`), the back end's `ZQ_POOL` 4096, and a
+  non-waiting `zq_drain` stops at the first report still open (the GPU answers in order). Max pending seen: ~190, no
+  waits. With the old 64 and the new drain: 22.7 ms, so most of the gain is the list size.
+- **Cube map.** `80C0F100` (128x128 DXT5) is bound with 1 and with 7 levels. `get_cube_texture` keyed its one entry by
+  address, size and format, so the two strides' hashes alternated and every bind decoded all six faces (~3.7 ms a
+  frame). The face stride is now part of the key; decodes are back to ~0.3 ms a frame.
+
+Frames compared (dumps, and an 85-frame burst at the ice start line and driving): AI cars keep their wheels,
+headlights and lamp glows show, no frame-to-frame dropouts. Reports now answer up to ~1.5 frames later; the title
+already saw tests incomplete for a while since 22.
+
+Not reproduced: 20-25 fps in rallycross (Pretzel, day) here; its heaviest views (wide park shots, ~1600 draws at tree
+detail 4) run ~50 fps. The ~25 fps runs seen once were the visible-window bench while the display was idle: the menus
+ran at 29 flips/s too, so it was presentation, not the game. Also seen on the game thread, not changed: DSOUND
+voice updates (`sub_00329B50`, `sub_0032A104`, `sub_0032A19C`) touch APU registers (0xFE820xxx), each a trapped
+access through the exception handler, ~10% of the game thread in the slower frames.
+
+Profiling: `RECOMP_SAMPLE=exec` samples the flipping thread (executor + back end) instead of the game thread and adds
+an inclusive table; `RECOMP_SAMPLE_SKIP=<s>` drops the first s seconds, `RECOMP_SAMPLE_SECS=<s>` sets the report
+interval (default 60), and stacks show up to four guest frames. The toolkit's `xbox_kernel` now builds with `/Zi`
+(CMakeLists.txt), so its static functions have names (before: nearest public symbol, e.g. "xbox_WatchdogStart").
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
