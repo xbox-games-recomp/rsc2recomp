@@ -1008,10 +1008,11 @@ float recomp_tree_fade_scale(void)
  * The player check sub_002590D0 starts the fade-out and reset once the car is
  * further from the track ribbon than the track allows, and nearer than that
  * already sets the controller's "far off" flag (+0x1EED), which parks the
- * camera (mode 0xD, a fixed camera where the chase camera was).
- * RECOMP_NO_OOB_RECOVERY=1 skips both for human drivers (player +0x82C == 0).
- * The Car Reset button (player +0x8B8) and the AI's stuck recovery are
- * separate paths, not touched. */
+ * camera (mode 0xD, a fixed camera where the chase camera was). sub_0025A220
+ * also resets on the physics' flag (no ground under the car, or upside down)
+ * and on a height check. RECOMP_NO_OOB_RECOVERY=1 skips all of these for human
+ * drivers (player +0x82C == 0); the Car Reset button (player +0x8B8) is the
+ * way back. AI drivers keep every recovery. */
 int recomp_oob_free(uint32_t player)
 {
     static int on = -1;
@@ -1033,4 +1034,27 @@ int recomp_oob_recovery_skip(uint32_t player)
                         "(RECOMP_NO_OOB_RECOVERY)\n");
     }
     return 1;
+}
+
+/* The Car Reset binding check in sub_002586F0, in place of sub_000AE7B0
+ * ("down now, up at the previous pad poll"). The pad is polled several times
+ * per player update in a race, so that edge was nearly always gone when the
+ * player logic looked. This one compares with the same player's previous
+ * update: pad element `elem` of the pad's button mask (+0xB8). */
+uint32_t recomp_car_reset_pressed(uint32_t pad, uint32_t elem, uint32_t player)
+{
+    static struct { uint32_t player, elem; int down; } seen[16];
+    int down = elem < 32 && (MEM32(pad + 0xB8) & (1u << elem)) != 0;
+    int i, was;
+
+    for (i = 0; i < 16 && seen[i].player; i++)
+        if (seen[i].player == player && seen[i].elem == elem)
+            break;
+    if (i == 16)
+        i = 0;
+    was = seen[i].player == player && seen[i].elem == elem && seen[i].down;
+    seen[i].player = player;
+    seen[i].elem = elem;
+    seen[i].down = down;
+    return down && !was;
 }

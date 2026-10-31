@@ -72,7 +72,7 @@ environment variables are in `launcher.ini`. Useful extras for the *Extra enviro
 
 **Controls:** the first XInput pad maps 1:1 to the Xbox pad. Keyboard: WASD steer, IJKL right stick, arrows
 D-pad, Z/X/C/V = A/B/X/Y, Q/E = White/Black, 1/3 = brake/gas, Enter = Start, Backspace = Back. In a stage,
-Black cycles the camera and Back resets the car. F12 saves the last few seconds of frames to `flicker\`
+Black cycles the camera and White (Q) resets the car. F12 saves the last few seconds of frames to `flicker\`
 (flight recorder, for bug reports).
 
 ## How it works

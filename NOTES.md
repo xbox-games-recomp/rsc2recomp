@@ -903,17 +903,25 @@ User request: turn off the reset that puts the car back on the track when it lea
 Player objects: `[[[0x4230C0] + 8] + 0x2C]` is the race, players at `+0x20 + 4*i` (count at `+0x1658`). Player fields
 used here: `+0x82C` kind (0 human, 1 and 2 AI / other drivers), `+0x830` race state (4 while racing), `+0x808` the
 car controller (its body at `[+0x14]`, position at body `+0x48`/`+0x50`), `+0x840` the pad. `sub_0025A220` is the
-player's per-frame update; all three of its resets call `sub_00259E30`, which puts the car back on the ribbon.
+player's per-frame update; its resets all call `sub_00259E30`, which puts the car back on the ribbon.
 
 | path | trigger | resets |
 |---|---|---|
 | **Off-track (automatic)** | `sub_002590D0`, every frame in race states 4/5: horizontal distance from the car body to its nearest ribbon point. With A = the track's off-road allowance `[[0x4236DC]] + 0xC7` - 3 (50 - 3 = 47 on Cooper Hill), the limit is 0.8 A, or past 1.5 units the ribbon segment's own side limit (table `0x3CE0C0`, `sub_0026EA80`), either capped at A - 10 (37 here). Past the limit it sets "reset pending" `+0x960` and raises `+0x964` | `+0x964` grows by the frame time; `+0x95C` = 255 * it is the fade to black; above 2.0 the car is reset, and `+0x960` is only cleared after the reset (driving back in does not cancel it) |
-| Car Reset button | `sub_002586F0`: the control preset's two Car Reset bindings (bytes `+0xE`/`+0xF` of the binding table, 0x1C = none), pressed this frame (`sub_000AE7B0`) in race state 4, with no off-track reset pending | `+0x8B8` = 0.5 s fade, then the reset (idle value -10) |
+| **Physics flag (automatic)** | `0x25A794`: the physics' flag `[[body + 0x108] + 0x26C4]`, set when the terrain query under the car finds no ground (`0x146D1F`), after 5 s upside down (up vector y < -0.6) and slow (`0x13F0C4`), and by a third check at `0x138180` | sets `+0x960`, same fade and reset |
+| **Height (automatic)** | `0x25AF9B`: the car body's height more than the segment's tolerance `+0x9B4` from its last reference height `+0x9AC` | sets `+0x9BA` (timer x1.5) and `+0x960` |
+| Car Reset button | `sub_002586F0`: the control preset's two Car Reset bindings (bytes `+0xE`/`+0xF` of the binding table `[+0x94C]`, 0x1C = none; default element 19 = **White**), pressed (`sub_000AE7B0`) in race state 4, with no reset pending | `+0x8B8` = 0.5 s fade, then the reset (idle value -10) |
 | Stuck (AI only) | `sub_002586F0` for kinds 1/2: controller `+0x2600` set | same `+0x8B8` fade |
 | Network | `+0x872` with the network flag `0x466AED` | direct |
 
-A human player pinned against the pipe wall for a minute was never reset, so there is no stuck or upside-down
-recovery for people; the Car Reset button is theirs.
+A human pinned against the pipe wall for a minute (upright) was never reset: being stuck upright is the player's to
+fix with Car Reset; only upside down triggers the physics flag.
+
+**Car Reset never worked in this port.** Pad elements (bits of the pad's mask `+0xB8`): 13 RT, 14 A, 16 X, 19 White,
+25 Back (logged; by the same order 18 is Black, the camera binding at `+0x14`). So the default reset is White (Q on the
+keyboard), not Back as this README used to say. `sub_000AE7B0` is "down now and not at the previous pad poll"
+(`+0xBC`), but in a race the pad is polled ~6.6 times per player update (`sub_000AEA90` 11,748 times vs 1,784
+updates in one window), so the edge had almost always passed when the player logic looked, and White did nothing.
 
 **Fixed off-track camera.** Past a nearer limit (0.5 A, or the segment's other pair, `+0x34`/`+0x38`) the same check
 sets the controller's "far off" flag `+0x1EED`, cleared again 0.5 inside. While it is set, the camera-mode getters
@@ -926,8 +934,13 @@ Fix: `patch_gen.py` puts a call to `recomp_oob_recovery_skip(player)` (`recomp_m
 before the pending-flag store, and jumps past it when that returns 1: `RECOMP_NO_OOB_RECOVERY=1` and a human
 player (`+0x82C` == 0). The first skip logs `[OOB] car off the track: automatic recovery skipped`. A second anchor
 at `loc_00259287` (`recomp_oob_free(player)`, same test, no log) jumps to the function's exit before the far-off
-flag, so the chase camera stays on the car (added after the user saw the camera park off-track). AI and the Car
-Reset button are untouched. Launcher: **Gameplay -> Allow driving out of bounds (no auto-recovery)**, off by
+flag, so the chase camera stays on the car (added after the user saw the camera park off-track). Two more
+anchors skip the physics-flag and height stores in `sub_0025A220` (added after the user was still reset further
+out), so with the option on a human is never put back automatically. AI drivers keep every recovery.
+
+Car Reset, for everyone (it is a port bug, not part of the option): both binding checks call
+`recomp_car_reset_pressed(pad, element, player)` instead of `sub_000AE7B0`: down now and not at this player's
+previous update. The camera binding (`0x258C63`) has the same edge check and was left alone. Launcher: **Gameplay -> Allow driving out of bounds (no auto-recovery)**, off by
 default, saved in `launcher.user.ini` like the other settings.
 
 Verified (Career -> Pro SS1, Cooper Hill I, scripted drive into the pipe wall on the first bend, frames every
@@ -945,9 +958,12 @@ Camera, the same drive with the real allowance and a test-only build that scaled
 view parks behind, the car small in the distance at the wall; on, the flag stays 0 and the chase camera stays
 behind the car. The test code was removed.
 
-Not checked: driving beyond the real limit with the flag on, so what is out there (terrain edge, falling) is not
-known. The Car Reset button was not seen to work in the scripted runs (Back, X, Y, B, White, both thumbs and the
-D-pad, pressed with the car stopped at the wall); its binding comes from the control preset, not looked up.
+Physics flag and Car Reset, a test-only build raising `+0x26C4` every 3 s once racing: option on, 37 s of forced
+flags with no reset, then White -> fade and the car back on the road; option off, a fade and reset every ~5 s. The
+test code was removed.
+
+Not checked by me: driving beyond the real limits with the option on (the user's runs reached them), so what is
+out there (terrain edge, falling) is not written up.
 
 How found: a temporary build counting every generated function's entries (dumped every 0.5 s) and dumping guest
 RAM on request found the player objects and the car position; the dev-console command `playerFollowRibbonSpline`

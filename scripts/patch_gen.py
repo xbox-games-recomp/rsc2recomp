@@ -97,6 +97,24 @@ PATCHES=[
  # [ctrl + 0x1EED], which switches the camera to a fixed one (mode 0xD) until the car comes back. NOTES 32.
  ('loc_00259287: ;\n    _fca = xmm3.f[0]; _fcb = xmm4.f[0]; /* comiss */\n',
   'loc_00259287: ;\n    { extern int recomp_oob_free(uint32_t); if (recomp_oob_free(ebp)) goto loc_002592D8; } /* patch_gen: NOTES 32 */\n    _fca = xmm3.f[0]; _fcb = xmm4.f[0]; /* comiss */\n'),
+ # ... and the other two automatic resets in sub_0025A220: the physics' "put me back" flag
+ # [[body + 0x108] + 0x26C4] (no ground under the car, or upside down and slow for 5 s) and the
+ # height check (the car more than the segment's tolerance [player + 0x9B4] above or below its last
+ # reference height). With the knob the player resets with the Car Reset button instead. NOTES 32.
+ ('loc_0025A794: ;\n    MEM8(ebp + 0x960) = 1;\n',
+  'loc_0025A794: ;\n    { extern int recomp_oob_free(uint32_t); if (!recomp_oob_free(ebp)) MEM8(ebp + 0x960) = 1; } /* patch_gen: NOTES 32 */\n'),
+ ('loc_0025AF9B: ;\n    MEM8(ebp + 0x9BA) = 1;\n    MEM8(ebp + 0x960) = 1;\n',
+  'loc_0025AF9B: ;\n    { extern int recomp_oob_free(uint32_t); if (!recomp_oob_free(ebp)) { MEM8(ebp + 0x9BA) = 1; MEM8(ebp + 0x960) = 1; } } /* patch_gen: NOTES 32 */\n'),
+
+ # Car Reset button (Back in the default preset; binding bytes +0xE/+0xF of [player + 0x94C]): sub_002586F0
+ # asks sub_000AE7B0 "pressed since the previous pad poll", but in a race the pad is polled ~6.6 times per
+ # player update, so the press is almost always already old when the player logic looks and the button did
+ # nothing. Both binding checks ask recomp_car_reset_pressed instead: down now and not at this player's
+ # previous update. NOTES 32.
+ ('loc_00258AE7: ;\n    edx = edi;\n    PUSH32(esp, 0x00258AEEu); RECOMP_ABI_CALL(0x000AE7B0u, sub_000AE7B0); /* call 0x000AE7B0 */\n',
+  'loc_00258AE7: ;\n    edx = edi;\n    { extern uint32_t recomp_car_reset_pressed(uint32_t, uint32_t, uint32_t); eax = recomp_car_reset_pressed(edx, ecx, ebp); } /* patch_gen: NOTES 32 */\n'),
+ ('loc_00258AF5: ;\n    ecx = esi;\n    edx = edi;\n    PUSH32(esp, 0x00258AFEu); RECOMP_ABI_CALL(0x000AE7B0u, sub_000AE7B0); /* call 0x000AE7B0 */\n',
+  'loc_00258AF5: ;\n    ecx = esi;\n    edx = edi;\n    { extern uint32_t recomp_car_reset_pressed(uint32_t, uint32_t, uint32_t); eax = recomp_car_reset_pressed(edx, ecx, ebp); } /* patch_gen: NOTES 32 */\n'),
 ]
 files=sorted(glob.glob(GEN+'recomp_*.c'))
 ok=True
