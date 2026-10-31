@@ -1002,3 +1002,27 @@ float recomp_tree_fade_scale(void)
     }
     return scale;
 }
+
+/* ── Off-track recovery (patch_gen.py, NOTES 32) ─────────────────────────
+ *
+ * The player check sub_002590D0 starts the fade-out and reset once the car is
+ * further from the track ribbon than the track allows. RECOMP_NO_OOB_RECOVERY=1
+ * skips that for human drivers (player +0x82C == 0). The Car Reset button
+ * (player +0x8B8) and the AI's stuck recovery are separate paths, not touched. */
+int recomp_oob_recovery_skip(uint32_t player)
+{
+    static int on = -1;
+    static int logged;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_NO_OOB_RECOVERY");
+        on = e && *e && *e != '0';
+    }
+    if (!on || MEM32(player + 0x82C) != 0)
+        return 0;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr, "[OOB] car off the track: automatic recovery skipped "
+                        "(RECOMP_NO_OOB_RECOVERY)\n");
+    }
+    return 1;
+}

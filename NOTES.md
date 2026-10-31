@@ -896,6 +896,50 @@ How found: per-flip logs of the shadow quads' vertices, then `DrawVerticesUP`'s 
 the generated code: the ray hits and distances, a re-call of the query with the same inputs, and a
 thread/overlap check on `sub_000C6710`. The probes have been removed.
 
+## 32. Launcher option: drive out of bounds without the automatic recovery (patch_gen + recomp_manual.c)
+
+User request: turn off the reset that puts the car back on the track when it leaves the drivable area.
+
+Player objects: `[[[0x4230C0] + 8] + 0x2C]` is the race, players at `+0x20 + 4*i` (count at `+0x1658`). Player fields
+used here: `+0x82C` kind (0 human, 1 and 2 AI / other drivers), `+0x830` race state (4 while racing), `+0x808` the
+car controller (its body at `[+0x14]`, position at body `+0x48`/`+0x50`), `+0x840` the pad. `sub_0025A220` is the
+player's per-frame update; all three of its resets call `sub_00259E30`, which puts the car back on the ribbon.
+
+| path | trigger | resets |
+|---|---|---|
+| **Off-track (automatic)** | `sub_002590D0`, every frame in race states 4/5: horizontal distance from the car body to its nearest ribbon point. With A = the track's off-road allowance `[[0x4236DC]] + 0xC7` - 3 (50 - 3 = 47 on Cooper Hill), the limit is 0.8 A, or past 1.5 units the ribbon segment's own side limit (table `0x3CE0C0`, `sub_0026EA80`), either capped at A - 10 (37 here). Past the limit it sets "reset pending" `+0x960` and raises `+0x964` | `+0x964` grows by the frame time; `+0x95C` = 255 * it is the fade to black; above 2.0 the car is reset, and `+0x960` is only cleared after the reset (driving back in does not cancel it) |
+| Car Reset button | `sub_002586F0`: the control preset's two Car Reset bindings (bytes `+0xE`/`+0xF` of the binding table, 0x1C = none), pressed this frame (`sub_000AE7B0`) in race state 4, with no off-track reset pending | `+0x8B8` = 0.5 s fade, then the reset (idle value -10) |
+| Stuck (AI only) | `sub_002586F0` for kinds 1/2: controller `+0x2600` set | same `+0x8B8` fade |
+| Network | `+0x872` with the network flag `0x466AED` | direct |
+
+A human player pinned against the pipe wall for a minute was never reset, so there is no stuck or upside-down
+recovery for people; the Car Reset button is theirs. Past a nearer limit (0.5 A, or the segment's) the check also
+sets controller `+0x1EED` (cleared again 0.5 inside); not looked at, left alone.
+
+Fix: `patch_gen.py` puts a call to `recomp_oob_recovery_skip(player)` (`recomp_manual.c`) at `loc_0025925A`, just
+before the pending-flag store, and jumps past it when that returns 1: `RECOMP_NO_OOB_RECOVERY=1` and a human
+player (`+0x82C` == 0). The first skip logs `[OOB] car off the track: automatic recovery skipped`. AI and the
+Car Reset button are untouched. Launcher: **Gameplay -> Allow driving out of bounds (no auto-recovery)**, off by
+default, saved in `launcher.user.ini` like the other settings.
+
+Verified (Career -> Pro SS1, Cooper Hill I, scripted drive into the pipe wall on the first bend, frames every
+0.5 s). The scripted car could not get past the barriers, bushes and fences far enough to reach the real limit, so a
+test-only build held the allowance at 16 (A = 13, limit 3 units from the ribbon; the car at the wall is ~4.5 away) from
+a helper thread, which was then removed:
+
+| flag | result |
+|---|---|
+| off | fade to black 1-2 s after hitting the wall, car back on the road pointing down it; again when it hit the wall a second time |
+| on | `[OOB]` line in the log, no fade, the car stays at the wall for the remaining 25 s |
+
+Not checked: driving beyond the real limit with the flag on, so what is out there (terrain edge, falling) is not
+known. The Car Reset button was not seen to work in the scripted runs (Back, X, Y, B, White, both thumbs and the
+D-pad, pressed with the car stopped at the wall); its binding comes from the control preset, not looked up.
+
+How found: a temporary build counting every generated function's entries (dumped every 0.5 s) and dumping guest
+RAM on request found the player objects and the car position; the dev-console command `playerFollowRibbonSpline`
+(handler `0x2A0670`) led to the player list; then reading `sub_0025A220` and its callees.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):

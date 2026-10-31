@@ -57,9 +57,9 @@ The output is `build\Release\rsc2_recomp.exe`; `rsc2_launcher.exe` is copied to 
 
 ## Running
 
-`rsc2_launcher.exe` sets resolution, FXAA, tree draw distance, vsync, keyboard, rumble and logging, saves them to
-`launcher.user.ini` and logs to `run.log`; `--play` skips the window. The required environment variables are
-in `launcher.ini`. Useful extras for the *Extra environment* box:
+`rsc2_launcher.exe` sets resolution, FXAA, tree draw distance, vsync, keyboard, rumble, off-track recovery and
+logging, saves them to `launcher.user.ini` and logs to `run.log`; `--play` skips the window. The required
+environment variables are in `launcher.ini`. Useful extras for the *Extra environment* box:
 
 | Variable | Effect |
 |---|---|
@@ -68,6 +68,7 @@ in `launcher.ini`. Useful extras for the *Extra environment* box:
 | `RECOMP_D3D11_STRETCH=1` | Fill the window instead of keeping 4:3 |
 | `RECOMP_D3D11_HITCH=<ms>` | Log every frame slower than this |
 | `RECOMP_TREE_DETAIL=<n>` | Tree draw distance, n × the console's (the launcher's 1/2/4 choice) |
+| `RECOMP_NO_OOB_RECOVERY=1` | No automatic reset when the car leaves the track (the launcher's Gameplay option; NOTES 32) |
 
 **Controls:** the first XInput pad maps 1:1 to the Xbox pad. Keyboard: WASD steer, IJKL right stick, arrows
 D-pad, Z/X/C/V = A/B/X/Y, Q/E = White/Black, 1/3 = brake/gas, Enter = Start, Backspace = Back. In a stage,

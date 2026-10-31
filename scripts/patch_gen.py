@@ -85,6 +85,14 @@ PATCHES=[
  # that nothing reads, and XNet's own state is left alone. NOTES 24.
  ('loc_002071FC: ;\n    _cf = 0; /* logical op clears CF */\n    eax = eax & 0xFFFFFFDFu;\n',
   'loc_002071FC: ;\n    if (eax == 0) eax = 0x8002u; /* patch_gen: pending -> no-DHCP answer (NOTES 24) */\n    _cf = 0; /* logical op clears CF */\n    eax = eax & 0xFFFFFFDFu;\n'),
+
+ # Off-track recovery (RECOMP_NO_OOB_RECOVERY, src/recomp_manual.c): sub_002590D0 runs every frame for a
+ # racing player. When the car is further from the track ribbon than the limit (0.8 * the track's off-road
+ # distance, or the ribbon segment's own side limits), it sets "reset pending" [player + 0x960] and raises
+ # the fade timer [player + 0x964]; sub_0025A220 then fades out and puts the car back (sub_00259E30). The
+ # knob skips that store for human players, so they can drive anywhere. NOTES 32.
+ ('loc_0025925A: ;\n    xmm0 = xmm3; /* movaps */\n',
+  'loc_0025925A: ;\n    { extern int recomp_oob_recovery_skip(uint32_t); if (recomp_oob_recovery_skip(ebp)) goto loc_00259287; } /* patch_gen: NOTES 32 */\n    xmm0 = xmm3; /* movaps */\n'),
 ]
 files=sorted(glob.glob(GEN+'recomp_*.c'))
 ok=True
