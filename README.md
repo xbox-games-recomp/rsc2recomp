@@ -70,9 +70,9 @@ environment variables are in `launcher.ini`. Useful extras for the *Extra enviro
 | `RECOMP_TREE_DETAIL=<n>` | Tree draw distance, n × the console's (the launcher's 1/2/4 choice) |
 | `RECOMP_NO_OOB_RECOVERY=1` | No automatic reset when the car leaves the track (the launcher's Gameplay option; NOTES 32) |
 
-**Controls:** the first XInput pad maps 1:1 to the Xbox pad. Keyboard: WASD steer, IJKL right stick, arrows
+**Controls:** the first XInput pad maps 1:1 to the Xbox pad, with LB = Black and RB = White. Keyboard: WASD steer, IJKL right stick, arrows
 D-pad, Z/X/C/V = A/B/X/Y, Q/E = White/Black, 1/3 = brake/gas, Enter = Start, Backspace = Back. In a stage,
-Black cycles the camera and White (Q) resets the car. F12 saves the last few seconds of frames to `flicker\`
+Black (LB, E) cycles the camera and White (RB, Q) resets the car. F12 saves the last few seconds of frames to `flicker\`
 (flight recorder, for bug reports).
 
 ## How it works
