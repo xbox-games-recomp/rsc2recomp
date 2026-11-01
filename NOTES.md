@@ -1007,6 +1007,72 @@ Route: Main -> left, A (SINGLE RACE) -> right, A (RALLY) -> right x26 (SS3 Monte
 (down, down, left, left: 1 AI) -> A -> A -> A. Pad: throttle and stick must be separate `RECOMP_PAD_LIVE` lines to
 press together (`rt+lleft` does not steer).
 
+## 34. Profile (save game) names and the driver name (investigated, no port bug)
+
+The profile name is also the player's driver name. This section follows it from the keyboard to the disk and
+back. Nothing in the port changes or filters it: names round-trip as UTF-16, with symbols and accented letters.
+
+**Keyboard** (Select Profile -> Create new Profile; class `dice::meme::RscKeyboardNode`). Three pages: A-Z (0-9,
+A-Z, `'`, with Caps), Symbols (`( ) & * $ % ^ ! @ # [ ] { } \ | ; : ' " < > ? , . / - _ + = ~` and backtick,
+`² ³ © ® ™`) and International (`À Á Â Å Ä Ç È É Ê Ë Ì Í Î Ï Ñ Ò Ó Ô Õ Ö ß Ù Ú Û Ü Ý ÿ`, Caps applies). Space,
+BackSpc, cursor left/right, Done. The limit is **15 characters**: `0x1D8A36` calls the keyboard's vtable +0xC8
+with 0xF, and 30 presses in the live game stopped at 15. Done on an empty or all-space name gives "Invalid
+profile name" (0x5DD); a name that is already a profile gives 0x6D5 ("Profile already exists"); more than 16
+profiles gives 0x6E0.
+
+The field is pre-filled (`0x1D8700`): XFindFirstNickname/Next (`0x83F6A` / `0x84056`, this title only, 16-WCHAR
+buffer) supplies the first nickname that no profile uses yet. If there is none, the field gets string 0x25
+`PROFILE NAME`, or `PROFILE NAME<n>` (`%s%u`) when that is taken. The first key press replaces the default and
+Done keeps it. That explains the user's real profile, named `PROFILE NAME`. Scripted runs typed `000` / `0000`
+because the extra Start presses that skip the movies land on the `0` key.
+
+**Save name and folder.** On Done the game calls XSetNicknameW (`0x83C72`, from `0x1D9CA3`) with the name, then
+XCreateSaveGame (`0x83798`, from `0xBD4EE`; ret 0x18). It passes the name plus a type suffix from the locale
+table (`sub_000BB360`, strings 0x732-0x735: `_Ghost`, `_Replay`, `_Cartuning`, `_Profile`). The suffix is
+localised: Spanish uses `_Perfil`, `_Fantasma`, `_Repetición` and `_Tuning`; Japanese uses `_Player` for profiles.
+- Folder `UDATA\4d530039\<id>\`: `sub_0008335E` hashes the UTF-16 save name. Starting with h = 0, it computes
+  h = (h * 0x10000 + c) mod (2^48 - 59) for each character, then writes `%012X`. It uses no key and no
+  signature. All saves on hand match: `000_Profile` -> `A7FA92F2C4BD`, `0000_Profile` -> `148A92F2E78A`,
+  `PROFILE NAME_Profile` -> `4E7A06BAE7D4`, `Jo' ™\?Éß_Profile` -> `A0ABBA3BA1EA`. The shared `92F2` in the
+  first two comes from their common prefix.
+- `SaveMeta.xbx` (per save): UTF-16LE with BOM, `Name=<name>_Profile\r\n`, written by XCreateSaveGame
+  (`%lc%ls%lc%ls%ls%ls`). `TitleMeta.xbx` (per title): `TitleName=RalliSport Challenge 2\r\n`; it never holds the
+  player's name. Each save folder also holds `saveimage.xbx` and the game's `user.profile`, which stores the name
+  again as NUL-terminated UTF-16 at +0x278. Which of the two copies the list reads was not pinned down.
+- `UDATA\NICKNAME.XBN`: 3400 bytes, 50 entries of {u32 title id, WCHAR[32]}. The port shares one file for every
+  title in the save dir; the game asks only for its own entries.
+
+**Kernel/XAPI layer.** All of this is the XAPI linked into the game, not toolkit code. The kernel only ever
+sees `\Device\Harddisk0\partition1\UDATA\4d530039\<12 hex>\SaveMeta.xbx` and the like (ANSI paths;
+`kernel_path.c` widens them with CP_ACP). The player's name never reaches a host path, so characters that are
+illegal in Windows file names (`\ / : * ? " < > |`) are safe, and nothing is truncated or filtered below the
+keyboard's 15. Directory listings of the save folder are NOTES 16.
+
+**Read back as the driver name.** The name appears on the Select Profile list and its info panel, on the Main
+menu's profile panel, and in the race results table (`Pos / Name / Car / Finish`, player row). The race HUD
+(Rallycross: POS, LAP, RACE TIME) and the pause menu show no names. In this test every keyboard character came
+back unchanged: `Jo' ™\?Éß` was typed, saved and then shown in the list, Main and results.
+Only cosmetic: in the list/results font `\` and `?` overlap, which the keyboard's own font does not do.
+That is font metrics, almost certainly the original game's.
+
+**Mismatches and edge cases** (none is a port bug):
+- There is no rename: Select Profile offers Select, Back and Delete (Y). A new name means a new profile, so a
+  new folder.
+- Nicknames outlive their profiles: XAPI has no call to remove one. After a delete, that name comes back as
+  the next pre-fill.
+- The port's language is fixed to English (`kernel_xbox.c`, `XC_LANGUAGE` = 1), so profiles are always saved
+  as `<name>_Profile`. A save copied in from a Spanish or Japanese console (`<name>_Perfil` / `<name>_Player`)
+  would hash to a different folder when it is saved again. Untested: it probably leaves two copies.
+- The keyboard limit is 15 characters, nicknames hold 31 and XAPI save names hold far more, so nothing is cut
+  between the layers.
+
+Found by: `scripts/xrefs.py` on `0x83000-0x85000` (XCreateSaveGame callers, nickname calls), `scripts/xdis.py`, the
+`localestrings.str` table (string data starts at 0x24 + (count + 1) * 6, offsets in WCHARs), and a live run with
+`RECOMP_SAVE_ROOT` in a scratch folder: typing a name, the results screen after retiring from a 1-lap
+Rallycross race (Main -> left, A (SINGLE RACE) -> left, A (RALLYCROSS) -> A -> RACE SETTINGS left, left (1 lap),
+A -> START RACE A; Start, RETIRE, A), then
+Create new Profile again to see the pre-fill.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
