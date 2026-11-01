@@ -69,8 +69,14 @@ PATCHES=[
   '    if (MEM32(esi + 0x21258) >= 256) MEM32(esi + 0x21258) = 255; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x21258);\n    ecx = ecx + ecx * 2;\n', 3),
  ('    ecx = MEM32(esi + 0x1B254);\n    ecx = ecx + ecx * 2;\n',
   '    if (MEM32(esi + 0x1B254) >= 1024) MEM32(esi + 0x1B254) = 1023; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x1B254);\n    ecx = ecx + ecx * 2;\n', 2),
- ('    ecx = MEM32(esi + 0x12250);\n    ecx = ecx + ecx * 2;\n',
-  '    if (MEM32(esi + 0x12250) >= 1536) MEM32(esi + 0x12250) = 1535; /* patch_gen: NOTES 25 */\n    ecx = MEM32(esi + 0x12250);\n    ecx = ecx + ecx * 2;\n'),
+ # The first bucket (1536 at +0x12254, every object the traversal keeps) did fill on wide views at 4x, and
+ # its rewritten last slot was whole stretches of trees gone (Monte Carlo SS3). It moves to a larger array
+ # of its own (recomp_queue_main_base/_slot in src/recomp_manual.c): the one insert (0x274940), which also
+ # clamps, and the one reader, the call to sub_00273360 at 0x274CEB. NOTES 33.
+ ('    ecx = MEM32(esi + 0x12250);\n    ecx = ecx + ecx * 2;\n    edx = esi + ecx * 8 + 0x12254;\n',
+  '    { extern uint32_t recomp_queue_main_slot(uint32_t); edx = recomp_queue_main_slot(esi); } /* patch_gen: NOTES 33 */\n'),
+ ('    ecx = MEM32(esi + 0x12250);\n    edi = MEM32(edi + 0x40);\n    edx = esi + 0x12254;\n',
+  '    ecx = MEM32(esi + 0x12250);\n    edi = MEM32(edi + 0x40);\n    { extern uint32_t recomp_queue_main_base(uint32_t); edx = recomp_queue_main_base(esi); } /* patch_gen: NOTES 33 */\n'),
  ('loc_0010F276: ;\n    ecx = MEM32(esp + 0x70);\n',
   'loc_0010F276: ;\n    ecx = MEM32(esp + 0x70);\n    if (MEM32(ecx) >= 3104) MEM32(ecx) = 3103; /* patch_gen: NOTES 25 */\n'),
  ('loc_0010F764: ;\n    ecx = MEM32(esp + 0x70);\n',

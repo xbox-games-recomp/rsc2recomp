@@ -1003,6 +1003,48 @@ float recomp_tree_fade_scale(void)
     return scale;
 }
 
+/* The render queue's main bucket (patch_gen.py, NOTES 33): sub_00273E70 puts
+ * every object it keeps (trees' trunks, buildings, props) into 1536 24-byte
+ * slots at queue +0x12254, count at +0x12250, and sub_00273360 bins them for
+ * drawing. With the tree knob a wide view needs more (Monte Carlo SS3's valley:
+ * ~1700), and the NOTES 25 clamp kept rewriting the last slot, so whole
+ * stretches of trees went. The bucket now lives in its own array on the guest
+ * heap, one per queue; the count stays where the title keeps it. */
+#define RQ_MAIN_SLOTS 8192u
+extern uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment);
+
+uint32_t recomp_queue_main_base(uint32_t queue)
+{
+    static struct { uint32_t queue, base; } s_q[16];
+    for (int i = 0; i < 16; i++) {
+        if (s_q[i].queue == queue) return s_q[i].base;
+        if (s_q[i].queue == 0) {
+            uint32_t base = xbox_HeapAlloc(RQ_MAIN_SLOTS * 24u, 16);
+            if (!base) break;
+            s_q[i].base = base;
+            s_q[i].queue = queue;
+            fprintf(stderr, "[RQ] queue %08X: main bucket of %u at %08X\n", queue, RQ_MAIN_SLOTS, base);
+            return base;
+        }
+    }
+    return queue + 0x12254;   /* no room: the title's own 1536 slots */
+}
+
+/* The slot the next insert writes (the count is clamped as in NOTES 25). */
+uint32_t recomp_queue_main_slot(uint32_t queue)
+{
+    static uint32_t s_high = 1536;
+    uint32_t base = recomp_queue_main_base(queue);
+    uint32_t cap = base == queue + 0x12254 ? 1536u : RQ_MAIN_SLOTS;
+    uint32_t n = MEM32(queue + 0x12250);
+    if (n >= cap) MEM32(queue + 0x12250) = n = cap - 1;
+    if (n >= s_high) {
+        s_high = n + 256;
+        fprintf(stderr, "[RQ] main bucket reached %u objects\n", n + 1);
+    }
+    return base + n * 24u;
+}
+
 /* ── Off-track recovery (patch_gen.py, NOTES 32) ─────────────────────────
  *
  * The player check sub_002590D0 starts the fade-out and reset once the car is

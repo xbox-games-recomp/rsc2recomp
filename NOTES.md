@@ -969,6 +969,44 @@ How found: a temporary build counting every generated function's entries (dumped
 RAM on request found the player objects and the car position; the dev-console command `playerFollowRibbonSpline`
 (handler `0x2A0670`) led to the player list; then reading `sub_0025A220` and its callees.
 
+## 33. Monte Carlo SS3: trees, barriers and props vanish in the valley (patch_gen + recomp_manual.c)
+
+User sample (`flicker\20261031_185222`, Single Race -> Rally -> Monte Carlo SS3 "Bourg-Stephane", 1 AI, chase
+camera, RES 2, tree detail 4, `RECOMP_TREE_MODEL=2`): from frame 46 (race time 1:36.9, just past the white van at
+the village exit) objects drop out, and by 75 the big trees right of the road, the van, a crash barrier and the
+trees along the valley are gone. They stay gone; nothing flickers back. The stats show a steady slide, not a
+cut: draws 999 (044) -> 963 (046) -> 814 (075) -> ~800, with trunks `9A1B30D6` 244 -> 148 batches, the
+building/prop programme `E92096D6` 250 -> 204 -> ~140, `44B90E63` 20 -> 4. Close objects (spectators, cones,
+the car) stay. Distance does not decide it; the order the traversal meets objects does.
+
+Cause: the render queue's first bucket (`sub_00273E70`: 1536 24-byte slots at queue `+0x12254`, count at
+`+0x12250`, every object the traversal keeps) fills on this view. NOTES 25's clamp keeps the count at 1535, so
+every object after the 1536th rewrote the last slot and only the last one of them was drawn. At the
+user's spot the bucket wants ~1700 objects (logged); on SS1 it peaked at ~1450. The console never gets near
+it: the tree knob (23, 26) is what fills it. The other buckets stayed far under their caps (second bucket 79 of
+1024, tree list 1713 of 3104, its copy 1508 of 2048).
+
+Fix: the bucket moves to an 8192-slot array of its own on the guest heap (`recomp_queue_main_base`, one per
+queue, logged as `[RQ] queue ...: main bucket of 8192 at ...`). Two `patch_gen.py` entries replace the NOTES 25
+clamp: the one insert (`0x274940`) takes its slot from `recomp_queue_main_slot` (still clamped, at 8191), and the
+one reader, the call to `sub_00273360` at `0x274CEB`, gets the new base. The count stays at `+0x12250`, where the
+title resets it. `[RQ] main bucket reached n objects` logs each new high past 1536, in steps of 256.
+
+Verified on Monte Carlo SS3 at the user's spot (scripted driving through `RECOMP_PAD_LIVE` with forced resets
+from a test hook, since removed):
+- Old bucket (probe build): the drive through the van corner left the valley bare in the same way as the user's
+  frames, while the probe counted up to ~1470 overflowing inserts a second.
+- New bucket: the trees and barriers past the van stay (1:32.8, 127 km/h), `[RQ] main bucket reached 1537`.
+- Same paused camera, the old 1536 bucket switched back in and out at run time (test switch, since removed): with
+  1536 slots the trees on both sides and the barrier are gone, with 8192 they are there.
+Frames: `ss3_before_after_driving.png` and `ss3_ab_same_camera.png` in this session's shared notes folder (outside
+the repo). The final build (probes and test switches removed) starts and drives SS3. Frame rate not measured; the
+change is one host call per queued object.
+
+Route: Main -> left, A (SINGLE RACE) -> right, A (RALLY) -> right x26 (SS3 Monte Carlo) -> A -> RACE SETTINGS
+(down, down, left, left: 1 AI) -> A -> A -> A. Pad: throttle and stick must be separate `RECOMP_PAD_LIVE` lines to
+press together (`rt+lleft` does not steer).
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):
