@@ -783,7 +783,7 @@ User check: 4x holds 60 fps or more with vsync on, in the launcher.
 ## 29. Trees at 4x dropped again: models kept 2x further by default (recomp_manual.c)
 
 With 28 in, the user saw the dark band of trees at the end of the road (Pro SS1, near the start) vanish again at 4x,
-driving forward (`flicker/20261030_022327`, frames 116-219: foliage vertex program 6B1E852A 762 -> 634 triangles).
+driving forward (`flicker/20261030_022327`, frames 116-219: foliage vertex program 6B1E852A 762 -> 634 triangles; 6B1E852A is really the tree cards, see 35).
 Not the geometry cache (`RECOMP_VSH_GEOM_CACHE=0` drops too) and not 27 (`RECOMP_D3D11_TEXCHECK=draw` drops too).
 
 Probed run (bumper camera, the user's spot): every drop caught was one tree model (~124 foliage triangles) switching
@@ -1072,6 +1072,40 @@ Found by: `scripts/xrefs.py` on `0x83000-0x85000` (XCreateSaveGame callers, nick
 Rallycross race (Main -> left, A (SINGLE RACE) -> left, A (RALLYCROSS) -> A -> RACE SETTINGS left, left (1 lap),
 A -> START RACE A; Start, RETIRE, A), then
 Create new Profile again to see the pre-fill.
+
+## 35. Tree cards: a whole 63-card chunk dropped by a second BEGIN (toolkit executor fix)
+
+User sample at console settings (tree detail 1, no extra env): Monte Carlo rally track 10 (`TrackMonteCarlo_R1_10`),
+~2:54, bonnet camera, creeping forward (`flicker\20261106_200941`, frames 0 vs 239). The tree group on the crest
+ahead disappears at frame 201 and stays gone. The user's xemu RenderDoc captures of the same stretch
+(`Downloads\rsc2-frame107605..107610.rdc`, 3:31; one game frame = two captures) draw it.
+
+- `6B1E852A` is the **impostor-card** programme, not foliage as 25 and 29 said: xemu's card draws (atlas texture
+  of tree sprites, SrcAlpha/InvSrcAlpha, depth test LE, no depth write) carry the same 14-slot programme, and its
+  slot words hashed our way (`nv2a_vsh_program_hash`) give `6B1E852A`. At frame 201 it went 206 -> 80 triangles and
+  nothing else rose: 63 cards = 126 triangles gone.
+- `sub_001101E0` draws the card queue (`[obj + 0x1F10]` cards at `+0x1F14`) straight into the push buffer in chunks of
+  63: `BEGIN(QUADS)` + `INLINE_ARRAY` of 63 x 32 dwords per chunk, the remainder last, and **one** `END` after the last
+  chunk (batches = count / 63 + 1). The hardware keeps everything: xemu's draw 707 has 308 vertices = 77 cards
+  (63 + 14) in one draw.
+- The executor's `SET_BEGIN_END` reset `inline_count` / `idx_count` / `imm_count` on every non-zero BEGIN, so as soon
+  as a pass queued 63 or more cards the first 63 were thrown away. That is the "model switches to a card that shows
+  nothing" of 25 and 29 (always ~124-128 triangles), and the reason the 2x model distance (29) seemed to help:
+  fewer cards, fewer passes over 63.
+
+Fix (`nv2a_pb_exec.c`, in `patches/xboxrecomp.patch`): a BEGIN while a primitive is open keeps the pending vertices when
+the primitive is the same, and draws them first when it differs. `RECOMP_PB_REBEGIN=0` restores the old reset.
+`NV_MAX_INLINE` raised from 64K to 1M dwords (as pgr2recomp 22), since one pass can now hold every card.
+
+Verified with an A/B at the same camera (Pro SS1 start line, RES 2, tree detail 1, per-flip stats with
+`RECOMP_D3D11_RING=60` + `RECOMP_D3D11_FRAMEVSH=1`): card triangles 344 (old) -> 474 (fix) every flip, and the end of
+the road closes with the band of distant trees that was sky before. The driving frame after it looks normal. Not yet
+checked by the user at the Monte Carlo spot. Open: 29's `sqrt(RECOMP_TREE_DETAIL)` model distance was a workaround for
+this and costs ~15% at 4x; it could go back to 1.
+
+Method: the user's xemu captures read with `qrenderdoc.exe --python` (RenderDoc 1.47 in `Downloads`): per-draw RT /
+texture inventory, the card draw's xemu GLSL (the VS slot words are in its comments), post-VS positions. Scripts
+`rd_inv.py`, `rd_tex.py`, `rd_card.py`, `vhash.py` in session 0594c721's scratchpad.
 
 ## Next
 
