@@ -57,8 +57,9 @@ The output is `build\Release\rsc2_recomp.exe`; `rsc2_launcher.exe` is copied to 
 
 ## Running
 
-`rsc2_launcher.exe` sets resolution, FXAA, tree draw distance, vsync, keyboard, rumble, off-track recovery and
-logging, saves them to `launcher.user.ini` and logs to `run.log`; `--play` skips the window. The required
+`rsc2_launcher.exe` sets window size, fullscreen (Alt+Enter switches), resolution scale, anti-aliasing (FXAA / FXAA extreme),
+scaling to the window (bilinear / CAS / FSR 1), anisotropic filtering, vsync, title-bar stats, keyboard, rumble,
+the Game page (tree draw distance, off-track recovery) and logging, saves them to `launcher.user.ini` and logs to `run.log`; `--play` skips the window. The required
 environment variables are in `launcher.ini`. Useful extras for the *Extra environment* box:
 
 | Variable | Effect |
@@ -68,10 +69,11 @@ environment variables are in `launcher.ini`. Useful extras for the *Extra enviro
 | `RECOMP_D3D11_STRETCH=1` | Fill the window instead of keeping 4:3 |
 | `RECOMP_D3D11_HITCH=<ms>` | Log every frame slower than this |
 | `RECOMP_TREE_DETAIL=<n>` | Tree draw distance, n × the console's (the launcher's 1/2/4 choice) |
-| `RECOMP_NO_OOB_RECOVERY=1` | No automatic reset when the car leaves the track (the launcher's Gameplay option; NOTES 32) |
+| `RECOMP_NO_OOB_RECOVERY=1` | No automatic reset when the car leaves the track (the launcher's Game page; NOTES 32) |
 
-**Controls:** the first XInput pad maps 1:1 to the Xbox pad, with LB = Black and RB = White. Keyboard: WASD steer, IJKL right stick, arrows
-D-pad, Z/X/C/V = A/B/X/Y, Q/E = White/Black, 1/3 = brake/gas, Enter = Start, Backspace = Back. In a stage,
+**Controls:** the first XInput pad maps 1:1 to the Xbox pad, with LB = Black and RB = White. Keyboard (on by default): arrows = D-pad, Enter = Start, Backspace = Back, Z/X/C/V = A/B/X/Y,
+Q/E = White/Black, 1/3 = triggers, WASD = left stick, IJKL = right stick, Shift/Ctrl = stick clicks; the same
+layout as every xbox-games-recomp port. Driving: WASD steer, 1/3 = brake/gas. In a stage,
 Black (LB, E) cycles the camera and White (RB, Q) resets the car. F12 saves the last few seconds of frames to `flicker\`
 (flight recorder, for bug reports).
 

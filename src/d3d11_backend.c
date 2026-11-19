@@ -21,7 +21,9 @@
  * Enabled by RECOMP_D3D11=1 (main.c). Environment knobs:
  *   RECOMP_D3D11_SCALE=<n.n>   initial window scale over 640x480 (default 1.5)
  *   RECOMP_D3D11_RES=<n>       internal resolution n x guest size (default 2; SSAA above the window)
- *   RECOMP_D3D11_FXAA=1        FXAA at present;  RECOMP_D3D11_STRETCH=1  fill the window (no 4:3)
+ *   RECOMP_D3D11_STRETCH=1     fill the window (no 4:3)
+ *   Launcher Display / Graphics options (window size, fullscreen, FXAA, CAS / FSR,
+ *   anisotropic filtering, title stats): d3d11_present_fx.h
  *   RECOMP_D3D11_VSYNC=0       present without waiting for vblank
  *   RECOMP_D3D11_NOCULL=1      ignore the title's cull state
  *   RECOMP_D3D11_CULLFLIP=1    swap the front-face winding
@@ -41,6 +43,7 @@
 
 #include "kernel/nv2a_backend.h"
 #include "input/keyboard.h"
+#include "d3d11_present_fx.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 extern uint32_t xbox_GetDisplayFramebuffer(uint32_t *pitch);   /* AvSetDisplayMode's fb */
@@ -377,24 +380,6 @@ static const char s_hlsl[] =
 "  if (okey.w > 0.5 && any(abs(c.rgb - okey.rgb) > 0.5 / 255.0)) return c;\n"
 "  return float4(vtex.Sample(smp0, (oin.xy + d * oin.zw) / osz.zw).rgb, 1);\n"
 "}\n"
-/* FXAA (Lottes' console variant) over the finished scanout; osrc.xy = its texel size. */
-"float fxl(float2 uv) { return dot(tex0.SampleLevel(smp0, uv, 0).rgb, float3(0.299, 0.587, 0.114)); }\n"
-"float4 FXPS(BOut i) : SV_Target {\n"
-"  float2 rc = osrc.xy, uv = i.uv;\n"
-"  float3 cm = tex0.SampleLevel(smp0, uv, 0).rgb;\n"
-"  float lm = dot(cm, float3(0.299, 0.587, 0.114));\n"
-"  float nw = fxl(uv + float2(-0.5, -0.5) * rc), ne = fxl(uv + float2(0.5, -0.5) * rc);\n"
-"  float sw = fxl(uv + float2(-0.5, 0.5) * rc), se = fxl(uv + float2(0.5, 0.5) * rc);\n"
-"  float lo = min(lm, min(min(nw, ne), min(sw, se))), hi = max(lm, max(max(nw, ne), max(sw, se)));\n"
-"  if (hi - lo < max(0.0312, hi * 0.125)) return float4(cm, 1);\n"
-"  float2 dir = float2((sw + se) - (nw + ne), (nw + sw) - (ne + se));\n"
-"  float red = max((nw + ne + sw + se) * (0.25 * 0.125), 1.0 / 128.0);\n"
-"  dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + red), -8.0, 8.0) * rc;\n"
-"  float3 a = 0.5 * (tex0.SampleLevel(smp0, uv - dir / 6.0, 0).rgb + tex0.SampleLevel(smp0, uv + dir / 6.0, 0).rgb);\n"
-"  float3 b = a * 0.5 + 0.25 * (tex0.SampleLevel(smp0, uv - dir * 0.5, 0).rgb + tex0.SampleLevel(smp0, uv + dir * 0.5, 0).rgb);\n"
-"  float lb = dot(b, float3(0.299, 0.587, 0.114));\n"
-"  return float4((lb < lo || lb > hi) ? a : b, 1);\n"
-"}\n"
 /* Depth buffer read back as a texture. A title that samples its Z24S8 buffer as
  * a 16-bit luminance texture twice as wide as the buffer gets two texels per
  * depth pixel: the low half-word (z low byte, stencil) and the high one (the
@@ -521,12 +506,6 @@ static volatile LONG s_resized;       /* WM_SIZE seen: the swap chain follows at
  * the title's coordinates -- and only the textures, viewports and clear rectangles are
  * scaled. Above the window size the present filter averages it down (supersampling). */
 static uint32_t s_res = 1;
-static int s_fxaa;                    /* RECOMP_D3D11_FXAA=1: FXAA pass at present */
-static ID3D11PixelShader *s_fxps;
-static ID3D11Texture2D *s_post_tex;   /* the scanout before FXAA, window-sized */
-static ID3D11RenderTargetView *s_post_rtv;
-static ID3D11ShaderResourceView *s_post_srv;
-static uint32_t s_post_w, s_post_h;
 static int s_failed;
 static int s_vsync = 1, s_nocull, s_cullflip, s_nodepth, s_trace;
 
@@ -627,6 +606,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         int side = xbox_InputWin32SideVk((int)w, (uint32_t)l);
+        if (pfx_handle_key(h, m, w, l))
+            return 0;                       /* Alt+Enter: fullscreen */
         if (m == WM_SYSKEYDOWN && w == VK_F4)
             break;                          /* Alt+F4 still closes */
         if (w == VK_F12) {                  /* flight recorder: save the last frames */
@@ -688,8 +669,7 @@ static int create_window(void)
     float scale = sc ? (float)atof(sc) : 1.5f;
 
     if (scale < 0.25f) scale = 1.5f;
-    s_win_w = (uint32_t)(640 * scale);
-    s_win_h = (uint32_t)(480 * scale);
+    pfx_window_size(&s_win_w, &s_win_h, (uint32_t)(640 * scale), (uint32_t)(480 * scale));
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleA(NULL);
@@ -703,6 +683,14 @@ static int create_window(void)
     s_hwnd = CreateWindowExA(0, wc.lpszClassName, "RalliSport Challenge 2 (D3D11)",
                              WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
                              r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
+    if (s_hwnd && pfx_fullscreen()) {
+        RECT cr;
+        pfx_set_fullscreen(s_hwnd, 1);
+        if (GetClientRect(s_hwnd, &cr) && cr.right > 0 && cr.bottom > 0) {
+            s_win_w = (uint32_t)cr.right;
+            s_win_h = (uint32_t)cr.bottom;
+        }
+    }
     return s_hwnd != NULL;
 }
 
@@ -756,7 +744,7 @@ static int init_device(void)
     s_res = (e = getenv("RECOMP_D3D11_RES")) ? (uint32_t)atoi(e) : 2;
     if (s_res < 1) s_res = 1;
     if (s_res > 6) s_res = 6;
-    s_fxaa = (e = getenv("RECOMP_D3D11_FXAA")) && atoi(e) != 0;
+    pfx_read_options();
 
     if (!create_window())
         return 0;
@@ -821,13 +809,14 @@ static int init_device(void)
         obd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         ID3D11Device_CreateBuffer(s_dev, &obd, NULL, &s_ocb);
     }
-    if (s_fxaa) {
-        ID3DBlob *fxb = compile("FXPS", "ps_5_0");
-        if (fxb) {
-            ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(fxb), ID3D10Blob_GetBufferSize(fxb), NULL, &s_fxps);
-            ID3D10Blob_Release(fxb);
+    pfx_init(s_dev);
+    {
+        /* Alt+Enter is the launcher's borderless fullscreen, not DXGI's exclusive mode. */
+        IDXGIFactory *f = NULL;
+        if (SUCCEEDED(IDXGISwapChain_GetParent(s_swap, &IID_IDXGIFactory, (void **)&f))) {
+            IDXGIFactory_MakeWindowAssociation(f, s_hwnd, DXGI_MWA_NO_ALT_ENTER);
+            IDXGIFactory_Release(f);
         }
-        if (!s_fxps) s_fxaa = 0;
     }
     hr = ID3D11Device_CreateInputLayout(s_dev, il, 8, ID3D10Blob_GetBufferPointer(vsb),
                                         ID3D10Blob_GetBufferSize(vsb), &s_layout);
@@ -869,7 +858,7 @@ static int init_device(void)
 
     ID3D11DeviceContext_IASetInputLayout(s_ctx, s_layout);
     fprintf(stderr, "[D3D11] device ready (feature level 0x%X), window %ux%u, internal %ux (%ux%u)%s\n", fl,
-            s_win_w, s_win_h, s_res, 640 * s_res, 480 * s_res, s_fxaa ? ", FXAA" : "");
+            s_win_w, s_win_h, s_res, 640 * s_res, 480 * s_res, pfx_describe());
     fflush(stderr);
     return 1;
 }
@@ -1629,6 +1618,10 @@ static ID3D11SamplerState *get_sampler(const Nv2aTexture *t)
     d.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     d.MaxLOD = (t->levels > 1 && minf >= 3) ? D3D11_FLOAT32_MAX : 0.0f;
     d.MaxAnisotropy = 1;
+    if (!nearest && pfx_anisotropy()) {        /* launcher: anisotropic filtering */
+        d.Filter = D3D11_FILTER_ANISOTROPIC;
+        d.MaxAnisotropy = pfx_anisotropy();
+    }
     d.ComparisonFunc = D3D11_COMPARISON_NEVER;
     if (FAILED(ID3D11Device_CreateSamplerState(s_dev, &d, &s))) return NULL;
     state_store(s_samp, &s_samp_n, key, s);
@@ -3881,31 +3874,6 @@ static void picture_rect(D3D11_VIEWPORT *vp)
     vp->MaxDepth = 1;
 }
 
-/* The FXAA source: the scanout at the picture's size. */
-static int ensure_post(uint32_t w, uint32_t h)
-{
-    D3D11_TEXTURE2D_DESC td;
-    if (s_post_tex && s_post_w == w && s_post_h == h)
-        return 1;
-    if (s_post_srv) ID3D11ShaderResourceView_Release(s_post_srv);
-    if (s_post_rtv) ID3D11RenderTargetView_Release(s_post_rtv);
-    if (s_post_tex) ID3D11Texture2D_Release(s_post_tex);
-    s_post_srv = NULL; s_post_rtv = NULL; s_post_tex = NULL;
-    memset(&td, 0, sizeof td);
-    td.Width = w; td.Height = h;
-    td.MipLevels = td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_post_tex)))
-        return 0;
-    ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)s_post_tex, NULL, &s_post_rtv);
-    ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)s_post_tex, NULL, &s_post_srv);
-    s_post_w = w; s_post_h = h;
-    return 1;
-}
-
 /* Scan out `r` (or black) to the window, with the video overlay on top. */
 static void present_frame(RT *r)
 {
@@ -3914,6 +3882,8 @@ static void present_frame(RT *r)
     FLOAT black[4] = { 0, 0, 0, 1 };
     OverlayCB cb;
     int fx;
+    ID3D11RenderTargetView *fx_rtv = NULL;
+    uint32_t fx_w = 0, fx_h = 0;
 
     resize_swap();
     if (!s_back_rtv)
@@ -3934,12 +3904,33 @@ static void present_frame(RT *r)
         cb.src[2] = (float)td.Width / pic.Width;
         cb.src[3] = (float)td.Height / pic.Height;
     }
-    fx = s_fxaa && ensure_post((uint32_t)pic.Width, (uint32_t)pic.Height);
+    fx = 0;
+    if (pfx_active()) {
+        /* FXAA / CAS / FSR: scan out at the guest size (or the picture size when
+         * shrinking), and let d3d11_present_fx.c filter and scale to the window. */
+        fx_w = (uint32_t)pic.Width;
+        fx_h = (uint32_t)pic.Height;
+        if (cb.on[1]) {
+            D3D11_TEXTURE2D_DESC td;
+            ID3D11Texture2D_GetDesc(r->tex, &td);
+            pfx_source_size(td.Width, td.Height, fx_w, fx_h, &fx_w, &fx_h);
+            cb.src[2] = (float)td.Width / (float)fx_w;
+            cb.src[3] = (float)td.Height / (float)fx_h;
+        }
+        fx_rtv = pfx_source_target(fx_w, fx_h);
+        fx = fx_rtv != NULL;
+        if (!fx && cb.on[1]) {
+            cb.src[2] = cb.src[0] > 0.0f ? 1.0f / cb.src[0] / pic.Width : 1.0f;
+            cb.src[3] = cb.src[1] > 0.0f ? 1.0f / cb.src[1] / pic.Height : 1.0f;
+        }
+    }
     ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_ocb, 0, NULL, &cb, 0, 0);
     vp = pic;
     if (fx) {
         vp.TopLeftX = vp.TopLeftY = 0;
-        ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s_post_rtv, NULL);
+        vp.Width = (float)fx_w;
+        vp.Height = (float)fx_h;
+        ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &fx_rtv, NULL);
     } else {
         ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s_back_rtv, NULL);
         ID3D11DeviceContext_ClearRenderTargetView(s_ctx, s_back_rtv, black);
@@ -3960,16 +3951,9 @@ static void present_frame(RT *r)
     srvs[0] = srvs[1] = NULL;
     ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 2, srvs);
     if (fx) {
-        cb.src[0] = 1.0f / pic.Width;
-        cb.src[1] = 1.0f / pic.Height;
-        ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_ocb, 0, NULL, &cb, 0, 0);
         ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s_back_rtv, NULL);
         ID3D11DeviceContext_ClearRenderTargetView(s_ctx, s_back_rtv, black);
-        ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &pic);
-        ID3D11DeviceContext_PSSetShader(s_ctx, s_fxps, NULL, 0);
-        ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &s_post_srv);
-        ID3D11DeviceContext_Draw(s_ctx, 3, 0);
-        ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, srvs);
+        pfx_present(s_ctx, s_back_rtv, &pic, s_bvs, s_samp_linear_clamp);
     }
     {
         /* RECOMP_D3D11_OVLDUMP=<prefix>: while the overlay shows, write the
@@ -4514,7 +4498,8 @@ static void be_flip(void)
         char t[160];
         snprintf(t, sizeof t, "RalliSport Challenge 2 (D3D11) - %u fps, %llu draws, %llu tris",
                  fps_n, (unsigned long long)s_draw_count, (unsigned long long)s_tri_count);
-        SetWindowTextA(s_hwnd, t);
+        if (pfx_title_stats())
+            SetWindowTextA(s_hwnd, t);
         if (s_trace) {
             fprintf(stderr, "[D3D11] %u fps; draws %llu tris %llu texdecodes %llu rts %d texs %d geom %d (%.0f MB) dropped %llu\n",
                     fps_n, (unsigned long long)s_draw_count, (unsigned long long)s_tri_count,
