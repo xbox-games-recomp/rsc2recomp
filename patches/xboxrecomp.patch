@@ -40,6 +40,85 @@ index 3ec56ca..9d0dee0 100644
      e = getenv("RECOMP_APU_VOICE_DUMP");
      if (e && *e) {
          const char *path = getenv("RECOMP_APU_VOICE_DUMP_FILE");
+diff --git a/src/input/keyboard.c b/src/input/keyboard.c
+index 99ffa12..aecf3eb 100644
+--- a/src/input/keyboard.c
++++ b/src/input/keyboard.c
+@@ -147,6 +147,27 @@ static int row_control(const xbox_key_row *r)
+     return -1;
+ }
+ 
++/* RECOMP_KEY_<CONTROL> replaces one control's keys: the control's setting
++ * key upper-cased (RECOMP_KEY_A, RECOMP_KEY_DPAD_UP, RECOMP_KEY_LEFT_STICK_UP)
++ * and a binding list as xbox_InputMap_BindingsParse reads it ("Z, Numpad8";
++ * "none" unbinds). The launcher's key settings write these. */
++static void apply_env_bindings(InputBindings *b)
++{
++    for (int c = 0; c < INPUT_CONTROL_COUNT; c++) {
++        const char *name = xbox_InputMap_ControlName(c);
++        char var[64] = "RECOMP_KEY_";
++        size_t n = strlen(var);
++        if (!name)
++            continue;
++        for (; *name && n + 1 < sizeof var; name++)
++            var[n++] = (*name >= 'a' && *name <= 'z') ? (char)(*name - 32) : *name;
++        var[n] = 0;
++        const char *v = getenv(var);
++        if (v)
++            xbox_InputMap_BindingsParse(b, c, v);
++    }
++}
++
+ void xbox_InputKeyboardBindings(InputBindings *b)
+ {
+     memset(b, 0, sizeof *b);
+@@ -159,18 +180,27 @@ void xbox_InputKeyboardBindings(InputBindings *b)
+             if (c >= 0 && r->vk[k] && b->count[c] < INPUT_BINDINGS_PER_CONTROL)
+                 b->key[c][b->count[c]++] = r->vk[k];
+     }
++    apply_env_bindings(b);
+ }
+ 
+ void xbox_InputKeyboardState(XBOX_INPUT_STATE *out)
+ {
+     static DWORD packet;
+-    InputBindings b;
++    /* The environment does not change while the game runs: resolve the map
++     * once. Two threads racing here both write the same bytes. */
++    static InputBindings b;
++    static volatile int have_bindings;
+     uint8_t down[INPUT_KEY_COUNT];
+ 
+     /* One snapshot of the table, so a poll sees one set of keys. */
+     for (int vk = 0; vk < INPUT_KEY_COUNT; vk++)
+         down[vk] = s_key_down[vk];
+-    xbox_InputKeyboardBindings(&b);
++    if (!have_bindings) {
++        InputBindings fresh;
++        xbox_InputKeyboardBindings(&fresh);
++        b = fresh;
++        have_bindings = 1;
++    }
+ 
+     memset(out, 0, sizeof *out);
+     /* Buttons set their bit, analog keys read 255 (a title that reads
+diff --git a/src/input/keyboard.h b/src/input/keyboard.h
+index 59eafd1..4aeb1da 100644
+--- a/src/input/keyboard.h
++++ b/src/input/keyboard.h
+@@ -112,8 +112,10 @@ int  xbox_FramebufferKeyDown(int vk);
+  * rules (input_map.h). Moves the packet number on every call, as the title
+  * looks for edges. */
+ void xbox_InputKeyboardState(XBOX_INPUT_STATE *out);
+-/* The map below as bindings (input_map.h): what xbox_InputKeyboardState
+- * resolves, and what xbox_InputMap_BindingsFormat writes as text. */
++/* The map below as bindings (input_map.h), with any RECOMP_KEY_<CONTROL>
++ * variables applied on top (RECOMP_KEY_A=Space, RECOMP_KEY_LEFT_STICK_UP=W,
++ * Up; "none" unbinds): what xbox_InputKeyboardState resolves (read once, at
++ * its first poll), and what xbox_InputMap_BindingsFormat writes as text. */
+ struct InputBindings;
+ void xbox_InputKeyboardBindings(struct InputBindings *b);
+ /* 0 when RECOMP_KEYBOARD is off, else 1 with *out filled by
 diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
 index 4a6389d..bb81eb5 100644
 --- a/src/kernel/kernel.h
