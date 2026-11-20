@@ -1,5 +1,7 @@
 # RalliSport Challenge 2 — Static Recompilation
 
+![The launcher](docs/launcher.png)
+
 ![Gameplay](docs/gameplay.webp)
 
 A native Windows (x64) port of the original-Xbox *RalliSport Challenge 2* (Digital Illusions / Microsoft, 2004).
