@@ -125,6 +125,36 @@ index eb33a61..d759dac 100644
              WCHAR pattern_wide[MAX_PATH];
              MultiByteToWideChar(CP_ACP, 0, FileName->Buffer, FileName->Length,
                                  pattern_wide, MAX_PATH);
+diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
+index 45d548c..5f035f1 100644
+--- a/src/kernel/kernel_hal.c
++++ b/src/kernel/kernel_hal.c
+@@ -1472,10 +1472,21 @@ VOID __stdcall xbox_AvSendTVEncoderOption(
+          *
+          * HDTV pack keeps 480p/720p available to titles that offer them;
+          * NTSC-M and 60Hz are the North American retail default, and match
+-         * the region reported by ExQueryNonVolatileSetting. */
+-        *Result = AV_PACK_HDTV
+-                | (AV_STANDARD_NTSC_M << AV_STANDARD_SHIFT)
+-                | AV_REFRESH_60Hz;
++         * the region reported by ExQueryNonVolatileSetting.
++         *
++         * Option 6 is the real kernel's AV_QUERY_AV_CAPABILITIES: it also carries
++         * the dashboard's user video flags (the EEPROM's XC_VIDEO high word, see
++         * ExQueryNonVolatileSetting), and D3D keys its mode rows on them too. With
++         * RECOMP_WIDESCREEN=1 a title asks for a widescreen row (flag 0x00010000);
++         * without the flag here no row matches, CreateDevice fails and the title
++         * reboots (PGR2). */
++        {
++            const char *ws = getenv("RECOMP_WIDESCREEN");
++            *Result = AV_PACK_HDTV
++                    | (AV_STANDARD_NTSC_M << AV_STANDARD_SHIFT)
++                    | AV_REFRESH_60Hz
++                    | ((ws && atoi(ws) != 0) ? 0x00010000u : 0);
++        }
+         break;
+ 
+     case AV_OPTION_QUERY_MODE:
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
 index 2f1edbb..479db4c 100644
 --- a/src/kernel/kernel_path.c
@@ -226,6 +256,37 @@ index 2f1edbb..479db4c 100644
 +}
 +
  #endif /* _WIN32 */
+diff --git a/src/kernel/kernel_xbox.c b/src/kernel/kernel_xbox.c
+index c23a3fe..dc920d0 100644
+--- a/src/kernel/kernel_xbox.c
++++ b/src/kernel/kernel_xbox.c
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include "kernel.h"
++#include <stdlib.h>
+ #include <string.h>
+ #include <time.h>
+ 
+@@ -220,9 +221,16 @@ NTSTATUS __stdcall xbox_ExQueryNonVolatileSetting(
+         break;
+ 
+     case XC_VIDEO:
+-        /* NTSC with widescreen and HDTV support enabled */
++        /* The dashboard's video settings. The EEPROM keeps them in the high word:
++         * XAPI's XGetVideoFlags returns (value >> 16) & 0x5F, so widescreen is
++         * 0x00010000 (XC_VIDEO_FLAGS_WIDESCREEN there), 480p 0x00080000. The old
++         * 0x3 here read back as 0 -- every title saw a 4:3 TV, which is still the
++         * default. RECOMP_WIDESCREEN=1 sets the console to "Widescreen": titles
++         * that support it render anamorphic 16:9 into their 640x480 surfaces and
++         * the back end shows the picture at 16:9. */
+         if (ValueLength >= sizeof(ULONG)) {
+-            *(PULONG)Value = XC_VIDEO_FLAGS_WIDESCREEN | XC_VIDEO_FLAGS_HDTV;
++            const char *ws = getenv("RECOMP_WIDESCREEN");
++            *(PULONG)Value = (ws && atoi(ws) != 0) ? 0x00010000u : 0;
+             if (Type) *Type = 4; /* REG_DWORD */
+             if (ResultLength) *ResultLength = sizeof(ULONG);
+         }
 diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
 index 327f01d..00acf44 100644
 --- a/src/kernel/nv2a_backend.h

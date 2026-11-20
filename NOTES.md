@@ -1107,6 +1107,26 @@ Method: the user's xemu captures read with `qrenderdoc.exe --python` (RenderDoc 
 texture inventory, the card draw's xemu GLSL (the VS slot words are in its comments), post-VS positions. Scripts
 `rd_inv.py`, `rd_tex.py`, `rd_card.py`, `vhash.py` in session 0594c721's scratchpad.
 
+## 36. Widescreen: the game's own 16:9 mode (`RECOMP_WIDESCREEN=1`, launcher Aspect ratio)
+
+The toolkit told every title it was on a 4:3 TV. XAPI's `XGetVideoFlags` returns
+`(XC_VIDEO >> 16) & 0x5F` (the EEPROM keeps the dashboard's video settings in the high word), and
+`ExQueryNonVolatileSetting(XC_VIDEO)` answered 0x3, which reads back as 0. With `RECOMP_WIDESCREEN=1` it
+now answers 0x00010000 (widescreen), and `AvSendTVEncoderOption` option 6 -- the real kernel's
+AV_QUERY_AV_CAPABILITIES, which carries the same user flags -- adds the bit too: D3D matches its display-mode
+rows against that answer, and without it CreateDevice fails and the title reboots (PGR2 did exactly that).
+Both in `kernel_xbox.c` / `kernel_hal.c` (patches/xboxrecomp.patch); unset = the old 4:3 behaviour.
+
+The launcher's Display > Aspect ratio now passes `RECOMP_ASPECT` (schema/xbox.ini); `main.c` turns
+anything but `4_3` into `RECOMP_WIDESCREEN=1` before the title starts. `d3d11_present_fx.c` gains
+`pfx_widescreen()` / `pfx_aspect()`, and the back end's window sizing (`keep_aspect`, the default size) and
+`picture_rect` use that aspect, so the 640x480 surface is shown at 16:9.
+
+RSC2 supports a widescreen TV itself (`XGetVideoFlags() & 1` at display object +0x3C0, global flag
+`[0x488710]` picks 16/9 over 4/3 in the camera code at `0x2AA16E`): menus, the career chart, car selection
+and the race render anamorphic 16:9; the 4:3 intro movies are pillarboxed by the game. Verified in frame
+dumps (`frames\ws1`, `frames\ws2` -- the latter through `RECOMP_ASPECT=16_9`, the launcher path) up to SS1.
+
 ## Next
 
 1. Profile creation with real input: **user-confirmed working (2026-10-28)**. Car selection (14, 15):

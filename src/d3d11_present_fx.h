@@ -5,6 +5,9 @@
  *
  *   RECOMP_WINDOW_WIDTH / RECOMP_WINDOW_HEIGHT   initial client size (default 960x720)
  *   RECOMP_FULLSCREEN=1                          borderless fullscreen; Alt+Enter toggles
+ *   RECOMP_WIDESCREEN=1                          16:9: the toolkit reports a widescreen TV
+ *                                                (titles that support it draw anamorphic
+ *                                                16:9) and the picture is shown at 16:9
  *   RECOMP_D3D11_FXAA=0|1|2                      anti-aliasing: none, FXAA, FXAA (extreme)
  *   RECOMP_D3D11_PRESENT_EFFECT=bilinear|cas|fsr scaling to the window
  *   RECOMP_D3D11_ANISO=-1..5                     anisotropic filtering: game default, off,
@@ -30,6 +33,9 @@ void pfx_read_options(void);
 /* Display. */
 void pfx_window_size(uint32_t *w, uint32_t *h, uint32_t def_w, uint32_t def_h);
 int pfx_fullscreen(void);
+/* RECOMP_WIDESCREEN: the picture's shape, width / height (16:9 or 4:3). */
+int pfx_widescreen(void);
+float pfx_aspect(void);
 /* Puts `hwnd` in borderless fullscreen on its monitor, or back to the saved window. */
 void pfx_set_fullscreen(HWND hwnd, int on);
 /* Alt+Enter in the window procedure: returns 1 when it handled the key. */

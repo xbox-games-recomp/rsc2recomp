@@ -17,7 +17,7 @@ Built on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) v0.15.0 (MIT, git
 
 **Status: early, playable.** Intro movies, menus, profiles (saved and reloaded), car selection and full stages
 (Career and Single Race) with gamepad and keyboard; 60 fps or more with vsync at 2× internal resolution,
-resizable 4:3 window, optional longer tree draw distance.
+resizable window, the game's own 16:9 widescreen mode, optional longer tree draw distance.
 
 ## Quick start
 
@@ -59,16 +59,18 @@ The output is `build\Release\rsc2_recomp.exe`; `rsc2_launcher.exe` is copied to 
 
 ## Running
 
-`rsc2_launcher.exe` sets window size, fullscreen (Alt+Enter switches), resolution scale, anti-aliasing (FXAA / FXAA extreme),
+`rsc2_launcher.exe` sets aspect ratio (anything but 4:3 plays in widescreen), window size, fullscreen (Alt+Enter switches), resolution scale, anti-aliasing (FXAA / FXAA extreme),
 scaling to the window (bilinear / CAS / FSR 1), anisotropic filtering, vsync, title-bar stats, keyboard, rumble,
-the Game page (tree draw distance, off-track recovery) and logging, saves them to `launcher.user.ini` and logs to `run.log`; `--play` skips the window. The required
-environment variables are in `launcher.ini`. Useful extras for the *Extra environment* box:
+the Game page (tree draw distance, off-track recovery) and logging, saves them to `launcher.user.ini` and logs to `run.log` (the run before is kept as `run.prev.log`); `--play` skips the window.
+Only one launcher window opens (starting it again brings that window to the front), and Play does nothing
+while the game is already running. The required environment variables are in `launcher.ini`. Useful extras for the *Extra environment* box:
 
 | Variable | Effect |
 |---|---|
 | `RECOMP_D3D11_RES=<n>` | Internal resolution n × 640×480 (default 2, max 6), averaged down to the window |
 | `RECOMP_D3D11_SCALE=<f>` | Initial window size f × 640×480 (default 1.5) |
-| `RECOMP_D3D11_STRETCH=1` | Fill the window instead of keeping 4:3 |
+| `RECOMP_D3D11_STRETCH=1` | Fill the window instead of keeping 4:3 (or 16:9) |
+| `RECOMP_WIDESCREEN=1` | The game's 16:9 widescreen mode (what the launcher's non-4:3 aspect ratios set); NOTES 36 |
 | `RECOMP_D3D11_HITCH=<ms>` | Log every frame slower than this |
 | `RECOMP_TREE_DETAIL=<n>` | Tree draw distance, n × the console's (the launcher's 1/2/4 choice) |
 | `RECOMP_NO_OOB_RECOVERY=1` | No automatic reset when the car leaves the track (the launcher's Game page; NOTES 32) |
@@ -102,8 +104,8 @@ anything.
 ## Open issues
 
 1. Audio has not been checked against the console (the game uses its own APU DSP images).
-2. Some distant tree cards draw nothing where their model was; hidden by keeping models further out (NOTES 29).
-3. A reported terrain dropout was not reproduced; shadow quads with invalid UVs (NOTES 19).
+2. A reported terrain dropout was not reproduced; shadow quads with invalid UVs (NOTES 19).
+3. Widescreen is checked up to the first stage only (NOTES 36).
 4. No Xbox Live / System Link.
 
 ## Legal

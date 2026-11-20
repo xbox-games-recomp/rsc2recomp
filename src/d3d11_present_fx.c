@@ -25,6 +25,7 @@ static int s_effect = FX_BILINEAR;
 static int s_aniso = -1;        /* ReXGlue numbering: -1 game default, 0 off, 1..5 = 1x..16x */
 static int s_title_stats = 1;
 static int s_fullscreen;
+static int s_widescreen;
 static uint32_t s_win_w, s_win_h;
 
 static int env_int(const char *name, int def)
@@ -43,6 +44,7 @@ void pfx_read_options(void)
     s_aniso = env_int("RECOMP_D3D11_ANISO", -1);
     s_title_stats = env_int("RECOMP_TITLE_STATS", 1) != 0;
     s_fullscreen = env_int("RECOMP_FULLSCREEN", 0) != 0;
+    s_widescreen = env_int("RECOMP_WIDESCREEN", 0) != 0;
     s_win_w = (uint32_t)env_int("RECOMP_WINDOW_WIDTH", 0);
     s_win_h = (uint32_t)env_int("RECOMP_WINDOW_HEIGHT", 0);
 }
@@ -56,6 +58,10 @@ void pfx_window_size(uint32_t *w, uint32_t *h, uint32_t def_w, uint32_t def_h)
 }
 
 int pfx_fullscreen(void) { return s_fullscreen; }
+
+int pfx_widescreen(void) { return s_widescreen; }
+
+float pfx_aspect(void) { return s_widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
 
 static WINDOWPLACEMENT s_saved_place = { sizeof(WINDOWPLACEMENT) };
 static int s_is_fullscreen;

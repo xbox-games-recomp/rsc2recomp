@@ -561,7 +561,7 @@ static void note(const char *what, HRESULT hr)
 static int stretch_mode(void);
 static void repaint_now(void);
 
-/* WM_SIZING: keep the client area 4:3 while the user drags an edge or corner, so
+/* WM_SIZING: keep the client area 4:3 (16:9 with RECOMP_WIDESCREEN) while the user drags an edge or corner, so
  * the window never shows the picture stretched (DWM scales the last frame to the
  * window until the next present). Maximised or snapped windows are letterboxed by
  * picture_rect instead. */
@@ -569,6 +569,7 @@ static void keep_aspect(HWND h, WPARAM edge, RECT *wr)
 {
     RECT fr = { 0, 0, 0, 0 };
     LONG cw, ch, fw, fh;
+    LONG an = pfx_widescreen() ? 16 : 4, ad = pfx_widescreen() ? 9 : 3;   /* aspect an:ad */
 
     AdjustWindowRect(&fr, (DWORD)GetWindowLongA(h, GWL_STYLE), FALSE);
     fw = fr.right - fr.left;
@@ -577,13 +578,13 @@ static void keep_aspect(HWND h, WPARAM edge, RECT *wr)
     ch = (wr->bottom - wr->top) - fh;
     if (cw < 160) cw = 160;
     if (edge == WMSZ_LEFT || edge == WMSZ_RIGHT) {
-        ch = cw * 3 / 4;                     /* width leads, height follows */
+        ch = cw * ad / an;                   /* width leads, height follows */
     } else if (edge == WMSZ_TOP || edge == WMSZ_BOTTOM) {
-        cw = ch * 4 / 3;
-    } else if (cw * 3 > ch * 4) {            /* corner: the larger change leads */
-        ch = cw * 3 / 4;
+        cw = ch * an / ad;
+    } else if (cw * ad > ch * an) {          /* corner: the larger change leads */
+        ch = cw * ad / an;
     } else {
-        cw = ch * 4 / 3;
+        cw = ch * an / ad;
     }
     if (edge == WMSZ_LEFT || edge == WMSZ_TOPLEFT || edge == WMSZ_BOTTOMLEFT)
         wr->left = wr->right - (cw + fw);
@@ -669,7 +670,7 @@ static int create_window(void)
     float scale = sc ? (float)atof(sc) : 1.5f;
 
     if (scale < 0.25f) scale = 1.5f;
-    pfx_window_size(&s_win_w, &s_win_h, (uint32_t)(640 * scale), (uint32_t)(480 * scale));
+    pfx_window_size(&s_win_w, &s_win_h, (uint32_t)(480 * pfx_aspect() * scale + 0.5f), (uint32_t)(480 * scale));
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleA(NULL);
@@ -3857,14 +3858,14 @@ static int stretch_mode(void)
     return stretch;
 }
 
-/* The window rectangle the 4:3 picture goes in: letterboxed or pillarboxed, or the
- * whole window with RECOMP_D3D11_STRETCH=1. */
+/* The window rectangle the 4:3 (RECOMP_WIDESCREEN: 16:9) picture goes in: letterboxed
+ * or pillarboxed, or the whole window with RECOMP_D3D11_STRETCH=1. */
 static void picture_rect(D3D11_VIEWPORT *vp)
 {
-    float w = (float)s_win_w, h = (float)s_win_h;
+    float w = (float)s_win_w, h = (float)s_win_h, a = pfx_aspect();
     if (!stretch_mode()) {
-        if (w * 3.0f > h * 4.0f) w = floorf(h * 4.0f / 3.0f + 0.5f);
-        else h = floorf(w * 3.0f / 4.0f + 0.5f);
+        if (w > h * a) w = floorf(h * a + 0.5f);
+        else h = floorf(w / a + 0.5f);
     }
     vp->TopLeftX = floorf(((float)s_win_w - w) * 0.5f);
     vp->TopLeftY = floorf(((float)s_win_h - h) * 0.5f);

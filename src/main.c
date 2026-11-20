@@ -459,6 +459,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         /* The back end's window feeds the keyboard into the pad; a real pad still works. */
         if (!getenv("RECOMP_KEYBOARD"))
             _putenv("RECOMP_KEYBOARD=1");
+        /* The launcher's Aspect ratio: anything but 4:3 plays in widescreen. Set before the
+         * title asks the kernel for its video flags (d3d11_present_fx.h, RECOMP_WIDESCREEN). */
+        if (!getenv("RECOMP_WIDESCREEN")) {
+            const char *aspect = getenv("RECOMP_ASPECT");
+            if (aspect && *aspect && strcmp(aspect, "4_3") != 0)
+                _putenv("RECOMP_WIDESCREEN=1");
+        }
         rsc2_d3d11_backend_register();
         fprintf(stderr, "[BOOT] D3D11 render back end registered\n");
     }
